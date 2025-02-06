@@ -40,10 +40,10 @@ python -m pdfsplitter
 ```
 
 2. Use the GUI to:
-   - Load a PDF file using the "Open" button
-   - View page thumbnails
-   - Define chapter ranges
-   - Extract chapters to separate files
+   - Load a PDF file using the "Open" button in the toolbar
+   - View page thumbnails in a scrollable grid
+   - Select an output directory for split files
+   - (Coming soon) Define chapter ranges and extract them
 
 ## Development
 
@@ -63,6 +63,21 @@ isort src/ tests/
 mypy src/ tests/
 ```
 
+## Project Structure
+
+```
+pdfsplitter/
+├── src/
+│   └── pdfsplitter/
+│       ├── __init__.py      # Package initialization
+│       ├── __main__.py      # Application entry point
+│       ├── pdf_document.py  # PDF handling functionality
+│       └── main_window.py   # GUI implementation
+├── tests/                   # Test files
+├── pyproject.toml          # Project configuration
+└── README.md              # This file
+```
+
 ## License
 
 MIT License - See LICENSE file for details.
@@ -78,7 +93,26 @@ MIT License - See LICENSE file for details.
 ## Project Status
 
 - [x] Phase 1: Basic PDF Handling
-- [ ] Phase 2: Core GUI Implementation
+  - PDF loading and validation
+  - Thumbnail generation
+  - Page extraction functionality
+  
+- [x] Phase 2: Core GUI Implementation
+  - Main window layout
+  - Thumbnail preview grid
+  - File selection dialog
+  - Output directory selection
+  
 - [ ] Phase 3: Range Management GUI
+  - Chapter range input interface
+  - Range validation
+  - Range list management
+  - Split operation integration
+  
 - [ ] Phase 4: Polish and Error Handling
+  - Input validation
+  - Error dialogs
+  - Progress indicators
+  - UI polish
+  
 - [ ] Future: Automatic chapter detection 
