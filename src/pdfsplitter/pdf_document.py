@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, List
 
 import fitz  # PyMuPDF
+from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QImage
 
 class PDFLoadError(Exception):
@@ -73,11 +74,25 @@ class PDFDocument:
         try:
             for page in self.doc:
                 try:
-                    # Use a lower resolution matrix for faster thumbnail generation
-                    matrix = fitz.Matrix(1, 1)
+                    # Calculate zoom factors to achieve desired size
+                    zoom_w = size[0] / page.rect.width
+                    zoom_h = size[1] / page.rect.height
+                    zoom = min(zoom_w, zoom_h)  # Keep aspect ratio
+                    
+                    # Use calculated zoom for the matrix
+                    matrix = fitz.Matrix(zoom, zoom)
                     pix = page.get_pixmap(matrix=matrix)
+                    
+                    # Create QImage
                     img = QImage(pix.samples, pix.width, pix.height,
                                pix.stride, QImage.Format.Format_RGB888)
+                    
+                    # Scale to exact size, ignoring aspect ratio
+                    img = img.scaled(
+                        QSize(size[0], size[1]),
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation
+                    )
                     thumbnails.append(img)
                 except Exception as e:
                     raise PDFLoadError(f"Failed to generate thumbnail for page {page.number + 1}: {str(e)}")

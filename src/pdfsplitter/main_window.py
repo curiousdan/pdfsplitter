@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 )
 
 from .pdf_document import PDFDocument, PDFLoadError
+from .range_management import RangeManagementWidget
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,18 @@ class MainWindow(QMainWindow):
         toolbar = self._create_toolbar()
         toolbar.setObjectName("mainToolbar")
         
-        # Create thumbnail viewer
+        # Create main content area
+        content_layout = QHBoxLayout()
+        
+        # Left side: Thumbnail viewer
         self.thumbnail_viewer = ThumbnailViewer()
-        layout.addWidget(self.thumbnail_viewer)
+        content_layout.addWidget(self.thumbnail_viewer)
+        
+        # Right side: Range management
+        self.range_manager = RangeManagementWidget()
+        content_layout.addWidget(self.range_manager)
+        
+        layout.addLayout(content_layout)
         
         # Create bottom panel
         bottom_panel = QHBoxLayout()
@@ -158,6 +168,7 @@ class MainWindow(QMainWindow):
             self.pdf_doc = PDFDocument(Path(file_path))
             thumbnails = self.pdf_doc.generate_thumbnails()
             self.thumbnail_viewer.display_thumbnails(thumbnails)
+            self.range_manager.set_pdf_document(self.pdf_doc)
             logger.info(f"Opened PDF: {file_path}")
             
             # Update window title
