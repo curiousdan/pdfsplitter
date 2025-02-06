@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 from .pdf_document import PDFDocument, PDFLoadError
 from .range_management import RangeManagementWidget
 from .progress_dialog import ProgressDialog, WorkerThread
+from .bookmark_panel import BookmarkPanel
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,12 @@ class MainWindow(QMainWindow):
         h_layout.setStretch(1, 1)  # Range management
         
         layout.addLayout(h_layout)
+        
+        # Create and add bookmark panel
+        self.bookmark_panel = BookmarkPanel(self)
+        self.bookmark_panel.page_selected.connect(self._on_bookmark_selected)
+        self.bookmark_panel.range_selected.connect(self._on_range_selected)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.bookmark_panel)
     
     def _create_actions(self) -> None:
         """Create application actions."""
@@ -114,6 +121,15 @@ class MainWindow(QMainWindow):
         self.open_action.setStatusTip("Open a PDF file")
         self.open_action.triggered.connect(self._select_file)
         self.open_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
+        
+        # Toggle bookmark panel action
+        self.toggle_bookmarks_action = QAction("Show Bookmarks", self)
+        self.toggle_bookmarks_action.setCheckable(True)
+        self.toggle_bookmarks_action.setChecked(True)
+        self.toggle_bookmarks_action.triggered.connect(self._toggle_bookmark_panel)
+        self.toggle_bookmarks_action.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        )
         
         # Exit action
         self.exit_action = QAction("Exit", self)
@@ -127,6 +143,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
         toolbar.addAction(self.open_action)
+        toolbar.addAction(self.toggle_bookmarks_action)
         self.addToolBar(toolbar)
     
     def _create_statusbar(self) -> None:
@@ -182,6 +199,37 @@ class MainWindow(QMainWindow):
             self._current_page = current_page
             self.pdf_doc.update_current_page(current_page)
             logger.debug("Current page updated to %d", current_page)
+    
+    def _on_bookmark_selected(self, page: int) -> None:
+        """Handle bookmark selection."""
+        if not self.pdf_doc:
+            return
+            
+        # Calculate scroll position for page
+        total_pages = self.pdf_doc.get_page_count()
+        scroll_ratio = page / (total_pages - 1)
+        
+        # Get scroll bar
+        scrollbar = self.thumbnail_area.verticalScrollBar()
+        max_scroll = scrollbar.maximum()
+        
+        # Set scroll position
+        scrollbar.setValue(int(scroll_ratio * max_scroll))
+        logger.debug("Scrolled to page %d", page + 1)
+    
+    def _on_range_selected(self, start: int, end: int, title: str) -> None:
+        """Handle chapter range selection."""
+        if not self.pdf_doc:
+            return
+            
+        # Update range management widget
+        self.range_widget.add_range(start, end, title)
+        logger.debug("Added range %s (pages %d-%d)", title, start + 1, end + 1)
+    
+    def _toggle_bookmark_panel(self, checked: bool) -> None:
+        """Toggle bookmark panel visibility."""
+        self.bookmark_panel.setVisible(checked)
+        logger.debug("Bookmark panel visibility set to %s", checked)
 
     def _select_file(self) -> None:
         """Handle file selection."""
@@ -217,6 +265,9 @@ class MainWindow(QMainWindow):
             
             # Update range management widget
             self.range_widget.set_pdf_document(self.pdf_doc)
+            
+            # Update bookmark panel
+            self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
             
             # Update window title
             self.setWindowTitle(f"PDF Chapter Splitter - {Path(file_path).name}")
