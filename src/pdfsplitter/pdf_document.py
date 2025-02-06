@@ -3,17 +3,104 @@ Core PDF document handling functionality.
 """
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
+import logging
 
 import fitz  # PyMuPDF
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QObject, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from .preview_cache import PreviewCache
 from .bookmark_detection import BookmarkDetector, BookmarkTree, PageRange
 
+logger = logging.getLogger(__name__)
+
+class PreviewConfig:
+    """Configuration for preview generation."""
+    
+    # Default preview sizes
+    THUMBNAIL_SIZE = (150, 225)  # Smaller thumbnails for list
+    PREVIEW_SIZE = (300, 450)    # Larger for main view
+    
+    # Quality settings
+    THUMBNAIL_DPI = 72   # Lower DPI for thumbnails
+    PREVIEW_DPI = 144   # Higher DPI for previews
+    
+    # Color settings
+    USE_GRAYSCALE = True  # Use grayscale for thumbnails
+    JPEG_QUALITY = 85    # JPEG quality for compression
+
 class PDFLoadError(Exception):
     """Raised when there are issues loading a PDF file."""
     pass
+
+class PreviewGenerator(QObject):
+    """Handles asynchronous preview generation."""
+    
+    preview_ready = pyqtSignal(int, QImage)  # Signals when a preview is ready
+    
+    def __init__(self, doc: fitz.Document) -> None:
+        """Initialize the generator."""
+        super().__init__()
+        self.doc = doc
+    
+    def generate_preview(
+        self,
+        page_num: int,
+        size: Tuple[int, int],
+        dpi: int = PreviewConfig.PREVIEW_DPI,
+        grayscale: bool = False,
+        quality: int = PreviewConfig.JPEG_QUALITY
+    ) -> QImage:
+        """Generate an optimized preview."""
+        page = self.doc[page_num]
+        
+        # Calculate matrix for desired DPI
+        matrix = fitz.Matrix(dpi/72.0, dpi/72.0)
+        
+        # Generate pixmap with optimization flags
+        if grayscale:
+            pix = page.get_pixmap(
+                matrix=matrix,
+                colorspace="gray",
+                alpha=False
+            )
+        else:
+            pix = page.get_pixmap(
+                matrix=matrix,
+                alpha=False
+            )
+        
+        # Create base QImage
+        if grayscale:
+            img = QImage(
+                pix.samples,
+                pix.width,
+                pix.height,
+                pix.stride,
+                QImage.Format.Format_Grayscale8
+            )
+        else:
+            img = QImage(
+                pix.samples,
+                pix.width,
+                pix.height,
+                pix.stride,
+                QImage.Format.Format_RGB888
+            )
+        
+        # Scale to desired size
+        scaled = img.scaled(
+            QSize(*size),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation
+        )
+        
+        # Compress if quality specified
+        if quality < 100:
+            buffer = scaled.compressed(quality)
+            scaled = QImage.fromData(buffer)
+        
+        return scaled
 
 class PDFDocument:
     """Handles PDF loading, validation, and page operations."""
@@ -35,48 +122,22 @@ class PDFDocument:
         self._preview_cache = PreviewCache()
         self._bookmark_detector = BookmarkDetector()
         self._bookmark_tree: Optional[BookmarkTree] = None
+        self._preview_generator: Optional[PreviewGenerator] = None
         self._validate_and_load()
-    
-    def _validate_and_load(self) -> None:
-        """
-        Validate the PDF file and load it.
-        
-        Raises:
-            PDFLoadError: If validation fails or file cannot be loaded
-        """
-        if not self.file_path.exists():
-            raise PDFLoadError(f"File not found: {self.file_path}")
-        
-        if not self.file_path.is_file():
-            raise PDFLoadError(f"Not a file: {self.file_path}")
-        
-        if self.file_path.suffix.lower() != '.pdf':
-            raise PDFLoadError(f"Not a PDF file: {self.file_path}")
-        
-        if self.file_path.stat().st_size > self.MAX_FILE_SIZE:
-            raise PDFLoadError(f"File too large (max {self.MAX_FILE_SIZE/1024/1024}MB)")
-        
-        try:
-            self.doc = fitz.open(self.file_path)
-            # Validate that we can access pages
-            _ = len(self.doc)
-            
-            # Analyze bookmarks
-            self._bookmark_tree = self._bookmark_detector.analyze_document(self.doc)
-        except Exception as e:
-            raise PDFLoadError(f"Failed to load PDF: {str(e)}")
     
     def generate_preview(
         self,
         page_num: int,
-        size: Tuple[int, int] = (200, 300)
+        size: Optional[Tuple[int, int]] = None,
+        is_thumbnail: bool = False
     ) -> QImage:
         """
         Generate a preview for a single page.
         
         Args:
             page_num: Page number to generate preview for (0-based)
-            size: Tuple of (width, height) for the preview
+            size: Optional tuple of (width, height) for the preview
+            is_thumbnail: Whether this is a thumbnail (uses lower quality)
             
         Returns:
             QImage preview of the page
@@ -88,38 +149,32 @@ class PDFDocument:
         if not (0 <= page_num < self.get_page_count()):
             raise ValueError(f"Invalid page number: {page_num}")
         
+        # Determine preview configuration
+        if size is None:
+            size = (
+                PreviewConfig.THUMBNAIL_SIZE if is_thumbnail
+                else PreviewConfig.PREVIEW_SIZE
+            )
+        
         # Check cache first
         cached = self._preview_cache.get(page_num)
         if cached is not None:
             return cached
         
         try:
-            page = self.doc[page_num]
-            
-            # Calculate zoom factors to achieve desired size
-            zoom_w = size[0] / page.rect.width
-            zoom_h = size[1] / page.rect.height
-            zoom = min(zoom_w, zoom_h)  # Keep aspect ratio
-            
-            # Use calculated zoom for the matrix
-            matrix = fitz.Matrix(zoom, zoom)
-            pix = page.get_pixmap(matrix=matrix)
-            
-            # Create QImage
-            img = QImage(pix.samples, pix.width, pix.height,
-                        pix.stride, QImage.Format.Format_RGB888)
-            
-            # Scale to exact size, ignoring aspect ratio
-            img = img.scaled(
-                QSize(size[0], size[1]),
-                Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+            # Generate optimized preview
+            preview = self._preview_generator.generate_preview(
+                page_num,
+                size,
+                dpi=PreviewConfig.THUMBNAIL_DPI if is_thumbnail else PreviewConfig.PREVIEW_DPI,
+                grayscale=PreviewConfig.USE_GRAYSCALE and is_thumbnail,
+                quality=PreviewConfig.JPEG_QUALITY
             )
             
             # Cache the preview
-            self._preview_cache.put(page_num, img)
+            self._preview_cache.put(page_num, preview)
             
-            return img
+            return preview
         except Exception as e:
             raise PDFLoadError(f"Failed to generate preview for page {page_num + 1}: {str(e)}")
     
@@ -258,4 +313,36 @@ class PDFDocument:
         """Ensure the PDF document is properly closed."""
         if self.doc:
             self.doc.close()
-            self._preview_cache.clear() 
+            self._preview_cache.clear()
+    
+    def _validate_and_load(self) -> None:
+        """
+        Validate the PDF file and load it.
+        
+        Raises:
+            PDFLoadError: If validation fails or file cannot be loaded
+        """
+        if not self.file_path.exists():
+            raise PDFLoadError(f"File not found: {self.file_path}")
+        
+        if not self.file_path.is_file():
+            raise PDFLoadError(f"Not a file: {self.file_path}")
+        
+        if self.file_path.suffix.lower() != '.pdf':
+            raise PDFLoadError(f"Not a PDF file: {self.file_path}")
+        
+        if self.file_path.stat().st_size > self.MAX_FILE_SIZE:
+            raise PDFLoadError(f"File too large (max {self.MAX_FILE_SIZE/1024/1024}MB)")
+        
+        try:
+            self.doc = fitz.open(self.file_path)
+            # Validate that we can access pages
+            _ = len(self.doc)
+            
+            # Initialize preview generator
+            self._preview_generator = PreviewGenerator(self.doc)
+            
+            # Analyze bookmarks
+            self._bookmark_tree = self._bookmark_detector.analyze_document(self.doc)
+        except Exception as e:
+            raise PDFLoadError(f"Failed to load PDF: {str(e)}") 
