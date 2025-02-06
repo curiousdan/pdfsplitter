@@ -222,9 +222,17 @@ class MainWindow(QMainWindow):
         if not self.pdf_doc:
             return
             
-        # Update range management widget
-        self.range_widget.add_range(start, end, title)
-        logger.debug("Added range %s (pages %d-%d)", title, start + 1, end + 1)
+        # Update range management widget with selected range
+        try:
+            self.range_widget._add_range(start, end, title)
+            logger.debug("Added range %s (pages %d-%d)", title, start + 1, end + 1)
+        except Exception as e:
+            logger.error("Failed to add range: %s", str(e))
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Failed to add range: {str(e)}"
+            )
     
     def _toggle_bookmark_panel(self, checked: bool) -> None:
         """Toggle bookmark panel visibility."""
