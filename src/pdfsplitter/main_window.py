@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
         
         self.pdf_doc: Optional[PDFDocument] = None
         self.thumbnail_size = (200, 300)
+        self._current_page = 0
         
         self._init_ui()
         self._create_actions()
@@ -88,6 +89,9 @@ class MainWindow(QMainWindow):
         self.thumbnail_layout.setSpacing(5)
         self.thumbnail_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
         self.thumbnail_area.setWidget(self.thumbnail_widget)
+        
+        # Connect scroll bar value change to update current page
+        self.thumbnail_area.verticalScrollBar().valueChanged.connect(self._on_scroll)
         
         thumbnail_layout.addWidget(self.thumbnail_area)
         h_layout.addWidget(thumbnail_group)
@@ -158,6 +162,26 @@ class MainWindow(QMainWindow):
             container_layout.addWidget(page_label)
             
             self.thumbnail_layout.addWidget(container)
+    
+    def _on_scroll(self, value: int) -> None:
+        """Handle scroll events to update current page."""
+        if not self.pdf_doc:
+            return
+            
+        # Calculate current page based on scroll position
+        viewport_height = self.thumbnail_area.viewport().height()
+        content_height = self.thumbnail_widget.height()
+        scroll_ratio = value / (content_height - viewport_height) if content_height > viewport_height else 0
+        
+        # Estimate current page
+        total_pages = self.pdf_doc.get_page_count()
+        current_page = int(scroll_ratio * (total_pages - 1))
+        
+        # Update if changed
+        if current_page != self._current_page:
+            self._current_page = current_page
+            self.pdf_doc.update_current_page(current_page)
+            logger.debug("Current page updated to %d", current_page)
 
     def _select_file(self) -> None:
         """Handle file selection."""

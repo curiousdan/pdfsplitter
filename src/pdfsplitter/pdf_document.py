@@ -2,11 +2,13 @@
 Core PDF document handling functionality.
 """
 from pathlib import Path
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, List, Optional, Tuple
 
 import fitz  # PyMuPDF
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QImage
+
+from .preview_cache import PreviewCache
 
 class PDFLoadError(Exception):
     """Raised when there are issues loading a PDF file."""
@@ -29,6 +31,7 @@ class PDFDocument:
         """
         self.file_path = file_path
         self.doc: Any = None  # Will hold the fitz.Document instance
+        self._preview_cache = PreviewCache()
         self._validate_and_load()
     
     def _validate_and_load(self) -> None:
@@ -57,6 +60,63 @@ class PDFDocument:
         except Exception as e:
             raise PDFLoadError(f"Failed to load PDF: {str(e)}")
     
+    def generate_preview(
+        self,
+        page_num: int,
+        size: Tuple[int, int] = (200, 300)
+    ) -> QImage:
+        """
+        Generate a preview for a single page.
+        
+        Args:
+            page_num: Page number to generate preview for (0-based)
+            size: Tuple of (width, height) for the preview
+            
+        Returns:
+            QImage preview of the page
+            
+        Raises:
+            PDFLoadError: If preview generation fails
+            ValueError: If page number is invalid
+        """
+        if not (0 <= page_num < self.get_page_count()):
+            raise ValueError(f"Invalid page number: {page_num}")
+        
+        # Check cache first
+        cached = self._preview_cache.get(page_num)
+        if cached is not None:
+            return cached
+        
+        try:
+            page = self.doc[page_num]
+            
+            # Calculate zoom factors to achieve desired size
+            zoom_w = size[0] / page.rect.width
+            zoom_h = size[1] / page.rect.height
+            zoom = min(zoom_w, zoom_h)  # Keep aspect ratio
+            
+            # Use calculated zoom for the matrix
+            matrix = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=matrix)
+            
+            # Create QImage
+            img = QImage(pix.samples, pix.width, pix.height,
+                        pix.stride, QImage.Format.Format_RGB888)
+            
+            # Scale to exact size, ignoring aspect ratio
+            img = img.scaled(
+                QSize(size[0], size[1]),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            
+            # Cache the preview
+            self._preview_cache.put(page_num, img)
+            
+            return img
+        except Exception as e:
+            raise PDFLoadError(f"Failed to generate preview for page {page_num + 1}: {str(e)}")
+    
     def generate_thumbnails(
         self,
         size: tuple[int, int] = (200, 300),
@@ -79,35 +139,17 @@ class PDFDocument:
         total_pages = len(self.doc)
         
         try:
-            for i, page in enumerate(self.doc):
+            for i in range(total_pages):
                 try:
-                    # Calculate zoom factors to achieve desired size
-                    zoom_w = size[0] / page.rect.width
-                    zoom_h = size[1] / page.rect.height
-                    zoom = min(zoom_w, zoom_h)  # Keep aspect ratio
-                    
-                    # Use calculated zoom for the matrix
-                    matrix = fitz.Matrix(zoom, zoom)
-                    pix = page.get_pixmap(matrix=matrix)
-                    
-                    # Create QImage
-                    img = QImage(pix.samples, pix.width, pix.height,
-                               pix.stride, QImage.Format.Format_RGB888)
-                    
-                    # Scale to exact size, ignoring aspect ratio
-                    img = img.scaled(
-                        QSize(size[0], size[1]),
-                        Qt.AspectRatioMode.IgnoreAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation
-                    )
-                    thumbnails.append(img)
+                    thumbnail = self.generate_preview(i, size)
+                    thumbnails.append(thumbnail)
                     
                     # Report progress
                     if progress_callback:
                         progress = int((i + 1) * 100 / total_pages)
                         progress_callback(progress, f"Generating thumbnails... ({i + 1}/{total_pages})")
                 except Exception as e:
-                    raise PDFLoadError(f"Failed to generate thumbnail for page {page.number + 1}: {str(e)}")
+                    raise PDFLoadError(f"Failed to generate thumbnail for page {i + 1}: {str(e)}")
         except Exception as e:
             raise PDFLoadError(f"Failed to generate thumbnails: {str(e)}")
         
@@ -177,7 +219,17 @@ class PDFDocument:
         except Exception as e:
             raise PDFLoadError(f"Failed to extract pages: {str(e)}")
     
+    def update_current_page(self, page_num: int) -> None:
+        """
+        Update the current page for cache management.
+        
+        Args:
+            page_num: The new current page number
+        """
+        self._preview_cache.update_current_page(page_num)
+    
     def __del__(self) -> None:
         """Ensure the PDF document is properly closed."""
         if self.doc:
-            self.doc.close() 
+            self.doc.close()
+            self._preview_cache.clear() 
