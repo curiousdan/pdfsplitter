@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QImage
+from PyQt6.QtGui import QAction, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QFileDialog,
     QGridLayout,
@@ -63,11 +63,13 @@ class ThumbnailViewer(QScrollArea):
         # Add thumbnails to grid
         for i, thumbnail in enumerate(thumbnails):
             label = QLabel()
-            label.setPixmap(thumbnail.scaled(
+            # Convert QImage to QPixmap and scale it
+            pixmap = QPixmap.fromImage(thumbnail).scaled(
                 200, 300,
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation
-            ).toPixmap())
+            )
+            label.setPixmap(pixmap)
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setStyleSheet("border: 1px solid #ccc; padding: 5px; margin: 5px;")
             label.setToolTip(f"Page {i + 1}")

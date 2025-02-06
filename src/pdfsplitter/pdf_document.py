@@ -51,6 +51,8 @@ class PDFDocument:
         
         try:
             self.doc = fitz.open(self.file_path)
+            # Validate that we can access pages
+            _ = len(self.doc)
         except Exception as e:
             raise PDFLoadError(f"Failed to load PDF: {str(e)}")
     
@@ -63,13 +65,25 @@ class PDFDocument:
             
         Returns:
             List of QImage thumbnails
+            
+        Raises:
+            PDFLoadError: If thumbnail generation fails
         """
         thumbnails = []
-        for page in self.doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(1, 1))
-            img = QImage(pix.samples, pix.width, pix.height,
-                        pix.stride, QImage.Format.Format_RGB888)
-            thumbnails.append(img.scaled(size[0], size[1]))
+        try:
+            for page in self.doc:
+                try:
+                    # Use a lower resolution matrix for faster thumbnail generation
+                    matrix = fitz.Matrix(1, 1)
+                    pix = page.get_pixmap(matrix=matrix)
+                    img = QImage(pix.samples, pix.width, pix.height,
+                               pix.stride, QImage.Format.Format_RGB888)
+                    thumbnails.append(img)
+                except Exception as e:
+                    raise PDFLoadError(f"Failed to generate thumbnail for page {page.number + 1}: {str(e)}")
+        except Exception as e:
+            raise PDFLoadError(f"Failed to generate thumbnails: {str(e)}")
+        
         return thumbnails
     
     def get_page_count(self) -> int:
