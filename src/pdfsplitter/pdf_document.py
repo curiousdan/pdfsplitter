@@ -2,7 +2,7 @@
 Core PDF document handling functionality.
 """
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Callable, List, Optional
 
 import fitz  # PyMuPDF
 from PyQt6.QtCore import Qt, QSize
@@ -57,12 +57,17 @@ class PDFDocument:
         except Exception as e:
             raise PDFLoadError(f"Failed to load PDF: {str(e)}")
     
-    def generate_thumbnails(self, size: tuple[int, int] = (200, 300)) -> List[QImage]:
+    def generate_thumbnails(
+        self,
+        size: tuple[int, int] = (200, 300),
+        progress_callback: Optional[Callable[[int, str], None]] = None
+    ) -> List[QImage]:
         """
         Generate thumbnails for all pages in the PDF.
         
         Args:
             size: Tuple of (width, height) for the thumbnails
+            progress_callback: Optional callback for progress updates
             
         Returns:
             List of QImage thumbnails
@@ -71,8 +76,10 @@ class PDFDocument:
             PDFLoadError: If thumbnail generation fails
         """
         thumbnails = []
+        total_pages = len(self.doc)
+        
         try:
-            for page in self.doc:
+            for i, page in enumerate(self.doc):
                 try:
                     # Calculate zoom factors to achieve desired size
                     zoom_w = size[0] / page.rect.width
@@ -94,6 +101,11 @@ class PDFDocument:
                         Qt.TransformationMode.SmoothTransformation
                     )
                     thumbnails.append(img)
+                    
+                    # Report progress
+                    if progress_callback:
+                        progress = int((i + 1) * 100 / total_pages)
+                        progress_callback(progress, f"Generating thumbnails... ({i + 1}/{total_pages})")
                 except Exception as e:
                     raise PDFLoadError(f"Failed to generate thumbnail for page {page.number + 1}: {str(e)}")
         except Exception as e:
@@ -110,7 +122,13 @@ class PDFDocument:
         """
         return len(self.doc)
     
-    def extract_pages(self, start: int, end: int, output_path: Path) -> None:
+    def extract_pages(
+        self,
+        start: int,
+        end: int,
+        output_path: Path,
+        progress_callback: Optional[Callable[[int, str], None]] = None
+    ) -> None:
         """
         Extract a range of pages to a new PDF file.
         
@@ -118,6 +136,7 @@ class PDFDocument:
             start: Start page number (0-based)
             end: End page number (0-based, inclusive)
             output_path: Path where to save the extracted pages
+            progress_callback: Optional callback for progress updates
             
         Raises:
             PDFLoadError: If page extraction fails
@@ -131,12 +150,30 @@ class PDFDocument:
             
         if not (0 <= end < self.get_page_count()):
             raise ValueError(f"Invalid end page: {end}")
-            
+        
+        if progress_callback:
+            progress_callback(0, "Creating output document...")
+        
         try:
             doc_out = fitz.open()
-            doc_out.insert_pdf(self.doc, from_page=start, to_page=end)
+            
+            # Insert pages one by one to show progress
+            total_pages = end - start + 1
+            for i, page_num in enumerate(range(start, end + 1)):
+                doc_out.insert_pdf(self.doc, from_page=page_num, to_page=page_num)
+                
+                if progress_callback:
+                    progress = int((i + 1) * 80 / total_pages)  # Use 80% for copying
+                    progress_callback(progress, f"Copying pages... ({i + 1}/{total_pages})")
+            
+            if progress_callback:
+                progress_callback(90, "Saving output file...")
+            
             doc_out.save(str(output_path))
             doc_out.close()
+            
+            if progress_callback:
+                progress_callback(100, "Complete!")
         except Exception as e:
             raise PDFLoadError(f"Failed to extract pages: {str(e)}")
     
