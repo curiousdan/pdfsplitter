@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QImage
 
 from .preview_cache import PreviewCache
+from .bookmark_detection import BookmarkDetector, BookmarkTree, PageRange
 
 class PDFLoadError(Exception):
     """Raised when there are issues loading a PDF file."""
@@ -32,6 +33,8 @@ class PDFDocument:
         self.file_path = file_path
         self.doc: Any = None  # Will hold the fitz.Document instance
         self._preview_cache = PreviewCache()
+        self._bookmark_detector = BookmarkDetector()
+        self._bookmark_tree: Optional[BookmarkTree] = None
         self._validate_and_load()
     
     def _validate_and_load(self) -> None:
@@ -57,6 +60,9 @@ class PDFDocument:
             self.doc = fitz.open(self.file_path)
             # Validate that we can access pages
             _ = len(self.doc)
+            
+            # Analyze bookmarks
+            self._bookmark_tree = self._bookmark_detector.analyze_document(self.doc)
         except Exception as e:
             raise PDFLoadError(f"Failed to load PDF: {str(e)}")
     
@@ -163,6 +169,26 @@ class PDFDocument:
             Number of pages
         """
         return len(self.doc)
+    
+    def get_bookmark_tree(self) -> Optional[BookmarkTree]:
+        """
+        Get the bookmark tree for this document.
+        
+        Returns:
+            BookmarkTree if document has bookmarks, None otherwise
+        """
+        return self._bookmark_tree
+    
+    def get_chapter_ranges(self) -> List[PageRange]:
+        """
+        Get detected chapter ranges.
+        
+        Returns:
+            List of detected page ranges
+        """
+        if self._bookmark_tree:
+            return self._bookmark_tree.chapter_ranges
+        return []
     
     def extract_pages(
         self,
