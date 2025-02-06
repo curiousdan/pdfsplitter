@@ -224,7 +224,8 @@ class MainWindow(QMainWindow):
             
         # Update range management widget with selected range
         try:
-            self.range_widget._add_range(start, end, title)
+            # start and end are already 0-based from bookmark panel
+            self.range_widget._add_range(title, start, end)
             logger.debug("Added range %s (pages %d-%d)", title, start + 1, end + 1)
         except Exception as e:
             logger.error("Failed to add range: %s", str(e))

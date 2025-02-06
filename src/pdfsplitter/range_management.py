@@ -239,7 +239,7 @@ class RangeManagementWidget(QWidget):
         # Create buttons
         self.add_button = QPushButton("Add")
         self.add_button.setEnabled(False)
-        self.add_button.clicked.connect(self._add_range)
+        self.add_button.clicked.connect(self._on_add_clicked)
         self.add_button.setToolTip("Add this chapter range")
         
         self.split_button = QPushButton("Split PDF")
@@ -411,25 +411,63 @@ class RangeManagementWidget(QWidget):
             
         self._update_validation()
     
-    def _add_range(self) -> None:
-        """Add a new chapter range."""
+    def _on_add_clicked(self) -> None:
+        """Handle add button click."""
         name = self.name_edit.text().strip()
         start = self.start_page.value()
         end = self.end_page.value()
+        self._add_range(name, start - 1, end - 1)  # Convert to 0-based
+    
+    def _add_range(self, name: str, start: int, end: int) -> None:
+        """
+        Add a new chapter range.
         
-        # Store the range (using 0-based indices for internal storage)
-        self.ranges.append((name, start - 1, end - 1))
+        Args:
+            name: Name of the chapter
+            start: Start page (0-based)
+            end: End page (0-based)
+        """
+        # Validate the range
+        validator = RangeValidator(
+            self.pdf_doc.get_page_count() if self.pdf_doc else 0,
+            [(n, s, e) for n, s, e in self.ranges]
+        )
         
-        # Add to list widget
-        item = QListWidgetItem(f"{name}: Pages {start}-{end}")
+        name_result = validator.validate_name(name)
+        range_result = validator.validate_page_range(start, end)
+        
+        if not name_result.is_valid:
+            logger.warning("Invalid range name: %s", name_result.error_message)
+            QMessageBox.warning(
+                self,
+                "Invalid Range",
+                name_result.error_message
+            )
+            return
+            
+        if not range_result.is_valid:
+            logger.warning("Invalid page range: %s", range_result.error_message)
+            QMessageBox.warning(
+                self,
+                "Invalid Range",
+                range_result.error_message
+            )
+            return
+        
+        # Store the range
+        self.ranges.append((name, start, end))
+        
+        # Add to list widget (display 1-based page numbers)
+        item = QListWidgetItem(f"{name}: Pages {start + 1}-{end + 1}")
         self.range_list.addItem(item)
         
-        # Clear inputs and set next available page
-        self.name_edit.clear()
-        next_page = end + 1  # Start from the next page after the current range
-        if next_page <= self.pdf_doc.get_page_count():
-            self.start_page.setValue(next_page)
-            self.end_page.setValue(next_page)
+        # Clear inputs and set next available page if this was added via UI
+        if self.name_edit.text().strip() == name:
+            self.name_edit.clear()
+            next_page = end + 2  # Start from the next page after the current range
+            if next_page <= self.pdf_doc.get_page_count():
+                self.start_page.setValue(next_page)
+                self.end_page.setValue(next_page)
         
         # Update UI state
         self.split_button.setEnabled(True)
@@ -438,8 +476,11 @@ class RangeManagementWidget(QWidget):
         # Log for debugging
         logger.debug(
             "Added range - name: %s, start: %d, end: %d, current ranges: %s",
-            name, start, end, self.ranges
+            name, start + 1, end + 1, self.ranges
         )
+        
+        # Emit signal
+        self.ranges_updated.emit()
     
     def _remove_range(self) -> None:
         """Remove the selected range."""
