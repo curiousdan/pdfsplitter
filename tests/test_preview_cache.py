@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from PyQt6.QtGui import QImage
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, QBuffer, QByteArray
 
 from pdfsplitter.preview_cache import PreviewCache, MemoryPressure
 
@@ -14,7 +14,12 @@ def cache():
 @pytest.fixture
 def sample_image():
     """Create a sample QImage for testing."""
-    return QImage(100, 100, QImage.Format.Format_RGB888)
+    img = QImage(100, 100, QImage.Format.Format_RGB888)
+    # Fill with test pattern
+    for y in range(100):
+        for x in range(100):
+            img.setPixelColor(x, y, (x + y) % 256)
+    return img
 
 def test_cache_initialization(cache):
     """Test that cache is initialized with correct parameters."""

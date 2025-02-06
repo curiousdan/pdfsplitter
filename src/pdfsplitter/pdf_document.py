@@ -4,9 +4,10 @@ Core PDF document handling functionality.
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Tuple
 import logging
+import io
 
 import fitz  # PyMuPDF
-from PyQt6.QtCore import Qt, QSize, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, QObject, pyqtSignal, QByteArray, QBuffer
 from PyQt6.QtGui import QImage
 
 from .preview_cache import PreviewCache
@@ -52,55 +53,122 @@ class PreviewGenerator(QObject):
         quality: int = PreviewConfig.JPEG_QUALITY
     ) -> QImage:
         """Generate an optimized preview."""
-        page = self.doc[page_num]
-        
-        # Calculate matrix for desired DPI
-        matrix = fitz.Matrix(dpi/72.0, dpi/72.0)
-        
-        # Generate pixmap with optimization flags
-        if grayscale:
-            pix = page.get_pixmap(
-                matrix=matrix,
-                colorspace="gray",
-                alpha=False
-            )
-        else:
-            pix = page.get_pixmap(
-                matrix=matrix,
-                alpha=False
-            )
-        
-        # Create base QImage
-        if grayscale:
-            img = QImage(
-                pix.samples,
-                pix.width,
-                pix.height,
-                pix.stride,
-                QImage.Format.Format_Grayscale8
-            )
-        else:
-            img = QImage(
-                pix.samples,
-                pix.width,
-                pix.height,
-                pix.stride,
-                QImage.Format.Format_RGB888
-            )
-        
-        # Scale to desired size
-        scaled = img.scaled(
-            QSize(*size),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        # Compress if quality specified
-        if quality < 100:
-            buffer = scaled.compressed(quality)
-            scaled = QImage.fromData(buffer)
-        
-        return scaled
+        try:
+            page = self.doc[page_num]
+            
+            # Calculate matrix for desired DPI
+            matrix = fitz.Matrix(dpi/72.0, dpi/72.0)
+            
+            # Generate pixmap with optimization flags
+            try:
+                if grayscale:
+                    pix = page.get_pixmap(
+                        matrix=matrix,
+                        colorspace="gray",
+                        alpha=False
+                    )
+                else:
+                    pix = page.get_pixmap(
+                        matrix=matrix,
+                        alpha=False
+                    )
+            except RuntimeError as e:
+                # Handle MuPDF layer error by trying again without layers
+                if "No default Layer config" in str(e):
+                    logger.warning("Layer error encountered, retrying without layers")
+                    if grayscale:
+                        pix = page.get_pixmap(
+                            matrix=matrix,
+                            colorspace="gray",
+                            alpha=False,
+                            no_layers=True
+                        )
+                    else:
+                        pix = page.get_pixmap(
+                            matrix=matrix,
+                            alpha=False,
+                            no_layers=True
+                        )
+                else:
+                    raise
+            
+            # Create base QImage
+            if grayscale:
+                img = QImage(
+                    pix.samples,
+                    pix.width,
+                    pix.height,
+                    pix.stride,
+                    QImage.Format.Format_Grayscale8
+                )
+            else:
+                img = QImage(
+                    pix.samples,
+                    pix.width,
+                    pix.height,
+                    pix.stride,
+                    QImage.Format.Format_RGB888
+                )
+            
+            # Scale to desired size
+            target_size = QSize(*size)
+            target_aspect = target_size.width() / target_size.height()
+            img_aspect = img.width() / img.height()
+
+            if abs(target_aspect - img_aspect) < 0.01:  # Almost same aspect ratio
+                scaled = img.scaled(
+                    target_size,
+                    Qt.AspectRatioMode.IgnoreAspectRatio,  # Force exact size
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            else:
+                # Calculate dimensions that will fit within target size while preserving aspect ratio
+                if img_aspect > target_aspect:  # Image is wider
+                    new_width = target_size.width()
+                    new_height = int(new_width / img_aspect)
+                else:  # Image is taller
+                    new_height = target_size.height()
+                    new_width = int(new_height * img_aspect)
+                
+                scaled = img.scaled(
+                    QSize(new_width, new_height),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                )
+            
+            # Compress if quality specified
+            if quality < 100:
+                # Create a buffer for the compressed image
+                buffer = QBuffer()
+                buffer.open(QBuffer.OpenModeFlag.WriteOnly)
+                
+                # Save as JPEG with specified quality
+                success = scaled.save(buffer, "JPEG", quality)
+                buffer.close()
+                
+                if not success:
+                    logger.warning("Failed to compress image, using uncompressed version")
+                    return scaled
+                
+                # Create new image with reduced memory footprint
+                compressed_data = buffer.data()
+                compressed_image = QImage()
+                if not compressed_image.loadFromData(compressed_data, "JPEG"):
+                    logger.warning("Failed to load compressed image, using uncompressed version")
+                    return scaled
+                
+                # Convert to 8-bit format for better memory usage
+                if grayscale:
+                    final_image = compressed_image.convertToFormat(QImage.Format.Format_Grayscale8)
+                else:
+                    final_image = compressed_image.convertToFormat(QImage.Format.Format_RGB888)
+                
+                return final_image
+            
+            return scaled
+        except Exception as e:
+            logger.error("Failed to generate preview: %s", str(e))
+            raise
 
 class PDFDocument:
     """Handles PDF loading, validation, and page operations."""
@@ -176,6 +244,7 @@ class PDFDocument:
             
             return preview
         except Exception as e:
+            logger.error("Failed to generate preview for page %d: %s", page_num + 1, str(e))
             raise PDFLoadError(f"Failed to generate preview for page {page_num + 1}: {str(e)}")
     
     def generate_thumbnails(
