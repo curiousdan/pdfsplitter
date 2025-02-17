@@ -76,35 +76,9 @@ class MainWindow(QMainWindow):
         thumbnail_layout = QVBoxLayout(thumbnail_group)
         thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Add preview label
-        preview_label = QLabel("Preview")
-        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumbnail_layout.addWidget(preview_label)
-        
-        # Add preview widget
-        self.preview_widget = QLabel()
-        self.preview_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_widget.setMinimumSize(300, 450)
-        self.preview_widget.setStyleSheet("""
-            QLabel {
-                border: 1px solid #ccc;
-                background: white;
-                padding: 5px;
-            }
-        """)
-        thumbnail_layout.addWidget(self.preview_widget)
-        
-        # Add page number label
-        self.page_label = QLabel()
-        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.page_label.setStyleSheet("""
-            QLabel {
-                color: #666;
-                font-size: 12px;
-                padding: 4px;
-            }
-        """)
-        thumbnail_layout.addWidget(self.page_label)
+        thumbnail_label = QLabel("Page Thumbnails")
+        thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumbnail_layout.addWidget(thumbnail_label)
         
         # Create and add thumbnail widget
         self.thumbnail_widget = ThumbnailWidget()
@@ -143,7 +117,7 @@ class MainWindow(QMainWindow):
         # Save action
         self.save_action = QAction("Save", self)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
-        self.save_action.setStatusTip("Save changes to PDF")
+        self.save_action.setStatusTip("Save changes")
         self.save_action.triggered.connect(self._save_changes)
         self.save_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.save_action.setEnabled(False)
@@ -238,9 +212,6 @@ class MainWindow(QMainWindow):
         # Update preview to show the selected page
         self.pdf_doc.update_current_page(page)
         
-        # Update page label
-        self.page_label.setText(f"Page {page + 1} of {self.pdf_doc.get_page_count()}")
-        
         # Update status
         self.statusBar().showMessage(f"Navigated to page {page + 1}")
         logger.debug("Selected page %d from bookmark", page + 1)
@@ -314,8 +285,8 @@ class MainWindow(QMainWindow):
 
         try:
             self.pdf_doc.save_changes()
-            self.statusBar().showMessage("Changes saved")
             self.save_action.setEnabled(False)
+            self.statusBar().showMessage("Changes saved")
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -327,11 +298,12 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Handle window close event."""
         if self.pdf_doc:
-            has_unsaved = (
-                self.range_widget.has_unsaved_changes() or
-                self.pdf_doc.has_unsaved_changes
+            has_unsaved_changes = (
+                self.pdf_doc.has_unsaved_changes() or
+                self.range_widget.has_unsaved_changes()
             )
-            if has_unsaved:
+            
+            if has_unsaved_changes:
                 reply = QMessageBox.question(
                     self,
                     "Exit Application",
@@ -389,9 +361,10 @@ class MainWindow(QMainWindow):
                     self.pdf_doc.add_bookmark(title.strip(), page_number - 1)  # Convert to 0-based
                     # Update bookmark panel
                     self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
-                    # Update status and enable save button
-                    self.statusBar().showMessage(f"Added bookmark '{title}' at page {page_number}")
+                    # Enable save action
                     self.save_action.setEnabled(True)
+                    # Update status
+                    self.statusBar().showMessage(f"Added bookmark '{title}' at page {page_number}")
                     logger.info("Added bookmark '%s' at page %d", title, page_number)
                 except Exception as e:
                     QMessageBox.warning(
@@ -401,17 +374,11 @@ class MainWindow(QMainWindow):
                     )
                     logger.error("Failed to add bookmark: %s", str(e))
 
-    def _on_thumbnail_selected(self, page_num: int) -> None:
+    def _on_thumbnail_selected(self, page_number: int) -> None:
         """Handle thumbnail selection."""
         if not self.pdf_doc:
             return
             
-        # Update preview
-        self.pdf_doc.update_current_page(page_num - 1)  # Convert to 0-based
-        
-        # Update page label
-        self.page_label.setText(f"Page {page_num} of {self.pdf_doc.get_page_count()}")
-        
-        # Update status
-        self.statusBar().showMessage(f"Selected page {page_num}")
-        logger.debug("Selected page %d from thumbnail", page_num) 
+        # Update bookmark panel selection
+        self.bookmark_panel.select_page(page_number - 1)  # Convert to 0-based
+        logger.debug("Selected page %d from thumbnail", page_number) 

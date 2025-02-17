@@ -8,7 +8,7 @@ import io
 
 import fitz  # PyMuPDF
 from PyQt6.QtCore import Qt, QSize, QObject, pyqtSignal, QByteArray, QBuffer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage
 
 from .preview_cache import PreviewCache
 from .bookmark_detection import BookmarkDetector, BookmarkTree, PageRange
@@ -191,8 +191,7 @@ class PDFDocument:
         self._bookmark_detector = BookmarkDetector()
         self._bookmark_tree: Optional[BookmarkTree] = None
         self._preview_generator: Optional[PreviewGenerator] = None
-        self._current_page = 0  # Added for current page tracking
-        self._modified = False  # Added for unsaved changes tracking
+        self._has_unsaved_changes = False
         self._validate_and_load()
     
     def generate_preview(
@@ -373,46 +372,13 @@ class PDFDocument:
     
     def update_current_page(self, page_num: int) -> None:
         """
-        Update the current page for preview and cache management.
+        Update the current page for cache management.
         
         Args:
-            page_num: The new current page number (0-based)
+            page_num: The new current page number
         """
-        if not (0 <= page_num < self.get_page_count()):
-            raise ValueError(f"Invalid page number: {page_num}")
-
-        # Update cache
         self._preview_cache.update_current_page(page_num)
-        
-        # Save the current page
-        self._current_page = page_num
-        
-        # Generate new preview
-        preview = self.generate_preview(page_num, PreviewConfig.PREVIEW_SIZE, is_thumbnail=False)
-        
-        # Update preview in main window
-        if hasattr(self, 'preview_widget'):
-            self.preview_widget.setPixmap(QPixmap.fromImage(preview))
-            self.preview_widget.setToolTip(f"Page {page_num + 1}")
-            
-        logger.debug("Updated preview to page %d", page_num + 1)
-
-    _modified = False  # Class variable for tracking changes
-
-    @property
-    def has_unsaved_changes(self) -> bool:
-        """Check if there are unsaved changes to bookmarks."""
-        return self._modified
-
-    def save_changes(self) -> None:
-        """Save any changes to the PDF file."""
-        try:
-            self.doc.save(self.file_path, incremental=True)
-            self._modified = False
-            logger.info("Saved changes to PDF")
-        except Exception as e:
-            raise PDFLoadError(f"Failed to save changes: {e}")
-
+    
     def __del__(self) -> None:
         """Ensure the PDF document is properly closed."""
         if self.doc:
@@ -451,6 +417,23 @@ class PDFDocument:
         except Exception as e:
             raise PDFLoadError(f"Failed to load PDF: {str(e)}")
 
+    def has_unsaved_changes(self) -> bool:
+        """Check if there are unsaved bookmark changes."""
+        return self._has_unsaved_changes
+
+    def save_changes(self) -> None:
+        """Save any changes to the PDF file."""
+        if not self._has_unsaved_changes:
+            return
+
+        try:
+            # Save the document
+            self.doc.save(self.file_path, incremental=True, encryption=self.doc.encryption)
+            self._has_unsaved_changes = False
+            logger.info("Saved changes to PDF file")
+        except Exception as e:
+            raise PDFLoadError(f"Failed to save changes: {e}")
+
     def add_bookmark(self, title: str, page: int) -> None:
         """
         Add a new bookmark to the PDF.
@@ -475,8 +458,8 @@ class PDFDocument:
             # Update our bookmark tree
             self._bookmark_tree = self._bookmark_detector.analyze_document(self.doc)
             
-            # Mark as modified
-            self._modified = True
+            # Mark as having unsaved changes
+            self._has_unsaved_changes = True
             
             logger.info("Added bookmark '%s' at page %d", title, page + 1)
             

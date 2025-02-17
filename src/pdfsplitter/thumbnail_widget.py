@@ -250,7 +250,15 @@ class ThumbnailWidget(QWidget):
         # Set new selection
         self.selected_page = page_number
         if page_number and 1 <= page_number <= len(self.thumbnails):
-            self.thumbnails[page_number - 1].set_selected(True)
+            # Select the thumbnail
+            thumbnail = self.thumbnails[page_number - 1]
+            thumbnail.set_selected(True)
+            
+            # Scroll to make the thumbnail visible
+            self.scroll_area.ensureWidgetVisible(thumbnail)
+            
+            # Emit signal for preview update
+            self.page_selected.emit(page_number)
             
     def set_context_menu_handler(
         self,
