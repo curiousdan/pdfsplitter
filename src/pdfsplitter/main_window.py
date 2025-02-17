@@ -5,18 +5,20 @@ import logging
 from pathlib import Path
 from typing import Optional, List
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QPoint
 from PyQt6.QtGui import QAction, QKeySequence, QPixmap, QImage
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QScrollArea, QLabel,
-    QMessageBox, QStyle, QToolBar, QStatusBar
+    QMessageBox, QStyle, QToolBar, QStatusBar, QInputDialog,
+    QMenu
 )
 
 from .pdf_document import PDFDocument, PDFLoadError
 from .range_management import RangeManagementWidget
 from .progress_dialog import ProgressDialog, WorkerThread
 from .bookmark_panel import BookmarkPanel
+from .thumbnail_widget import ThumbnailWidget
 
 logger = logging.getLogger(__name__)
 
@@ -74,27 +76,43 @@ class MainWindow(QMainWindow):
         thumbnail_layout = QVBoxLayout(thumbnail_group)
         thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         
-        thumbnail_label = QLabel("Page Thumbnails")
-        thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        thumbnail_layout.addWidget(thumbnail_label)
+        # Add preview label
+        preview_label = QLabel("Preview")
+        preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumbnail_layout.addWidget(preview_label)
         
-        self.thumbnail_area = QScrollArea()
-        self.thumbnail_area.setWidgetResizable(True)
-        self.thumbnail_area.setMinimumWidth(300)
-        self.thumbnail_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.thumbnail_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        # Add preview widget
+        self.preview_widget = QLabel()
+        self.preview_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview_widget.setMinimumSize(300, 450)
+        self.preview_widget.setStyleSheet("""
+            QLabel {
+                border: 1px solid #ccc;
+                background: white;
+                padding: 5px;
+            }
+        """)
+        thumbnail_layout.addWidget(self.preview_widget)
         
-        # Create widget to hold thumbnails
-        self.thumbnail_widget = QWidget()
-        self.thumbnail_layout = QVBoxLayout(self.thumbnail_widget)
-        self.thumbnail_layout.setSpacing(5)
-        self.thumbnail_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        self.thumbnail_area.setWidget(self.thumbnail_widget)
+        # Add page number label
+        self.page_label = QLabel()
+        self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                font-size: 12px;
+                padding: 4px;
+            }
+        """)
+        thumbnail_layout.addWidget(self.page_label)
         
-        # Connect scroll bar value change to update current page
-        self.thumbnail_area.verticalScrollBar().valueChanged.connect(self._on_scroll)
+        # Create and add thumbnail widget
+        self.thumbnail_widget = ThumbnailWidget()
+        self.thumbnail_widget.setMinimumWidth(300)
+        self.thumbnail_widget.page_selected.connect(self._on_thumbnail_selected)
+        self.thumbnail_widget.set_context_menu_handler(self._handle_thumbnail_context_menu)
+        thumbnail_layout.addWidget(self.thumbnail_widget)
         
-        thumbnail_layout.addWidget(self.thumbnail_area)
         h_layout.addWidget(thumbnail_group)
         
         # Add range management widget
@@ -122,6 +140,14 @@ class MainWindow(QMainWindow):
         self.open_action.triggered.connect(self._select_file)
         self.open_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         
+        # Save action
+        self.save_action = QAction("Save", self)
+        self.save_action.setShortcut(QKeySequence.StandardKey.Save)
+        self.save_action.setStatusTip("Save changes to PDF")
+        self.save_action.triggered.connect(self._save_changes)
+        self.save_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
+        self.save_action.setEnabled(False)
+        
         # Toggle bookmark panel action
         self.toggle_bookmarks_action = QAction("Show Bookmarks", self)
         self.toggle_bookmarks_action.setCheckable(True)
@@ -143,6 +169,7 @@ class MainWindow(QMainWindow):
         toolbar.setMovable(False)
         toolbar.setIconSize(QSize(24, 24))
         toolbar.addAction(self.open_action)
+        toolbar.addAction(self.save_action)
         toolbar.addAction(self.toggle_bookmarks_action)
         self.addToolBar(toolbar)
     
@@ -205,17 +232,18 @@ class MainWindow(QMainWindow):
         if not self.pdf_doc:
             return
             
-        # Calculate scroll position for page
-        total_pages = self.pdf_doc.get_page_count()
-        scroll_ratio = page / (total_pages - 1)
+        # Update thumbnail selection
+        self.thumbnail_widget.set_selected_page(page + 1)  # Convert to 1-based
         
-        # Get scroll bar
-        scrollbar = self.thumbnail_area.verticalScrollBar()
-        max_scroll = scrollbar.maximum()
+        # Update preview to show the selected page
+        self.pdf_doc.update_current_page(page)
         
-        # Set scroll position
-        scrollbar.setValue(int(scroll_ratio * max_scroll))
-        logger.debug("Scrolled to page %d", page + 1)
+        # Update page label
+        self.page_label.setText(f"Page {page + 1} of {self.pdf_doc.get_page_count()}")
+        
+        # Update status
+        self.statusBar().showMessage(f"Navigated to page {page + 1}")
+        logger.debug("Selected page %d from bookmark", page + 1)
     
     def _on_range_selected(self, start: int, end: int, title: str) -> None:
         """Handle chapter range selection."""
@@ -257,20 +285,8 @@ class MainWindow(QMainWindow):
             self.pdf_doc = PDFDocument(Path(file_path))
             self.statusBar().showMessage(f"Loaded PDF: {Path(file_path).name}")
             
-            # Create thumbnail generator
-            generator = ThumbnailGenerator(self.pdf_doc, self.thumbnail_size)
-            generator.thumbnails_ready.connect(self._update_thumbnails)
-            
-            # Create worker thread
-            worker = WorkerThread(generator.generate)
-            
-            # Show progress dialog
-            dialog = ProgressDialog(
-                "Generating Thumbnails",
-                "Preparing to generate thumbnails...",
-                parent=self
-            )
-            dialog.run_operation(worker)
+            # Update thumbnail widget
+            self.thumbnail_widget.set_pdf_document(self.pdf_doc)
             
             # Update range management widget
             self.range_widget.set_pdf_document(self.pdf_doc)
@@ -291,20 +307,111 @@ class MainWindow(QMainWindow):
             )
             logger.error("Failed to load PDF: %s", str(e))
     
+    def _save_changes(self) -> None:
+        """Save changes to the PDF file."""
+        if not self.pdf_doc:
+            return
+
+        try:
+            self.pdf_doc.save_changes()
+            self.statusBar().showMessage("Changes saved")
+            self.save_action.setEnabled(False)
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error",
+                f"Failed to save changes: {str(e)}"
+            )
+            logger.error("Failed to save changes: %s", str(e))
+
     def closeEvent(self, event) -> None:
         """Handle window close event."""
         if self.pdf_doc:
-            reply = QMessageBox.question(
+            has_unsaved = (
+                self.range_widget.has_unsaved_changes() or
+                self.pdf_doc.has_unsaved_changes
+            )
+            if has_unsaved:
+                reply = QMessageBox.question(
+                    self,
+                    "Exit Application",
+                    "You have unsaved changes. Do you want to save before exiting?",
+                    QMessageBox.StandardButton.Save |
+                    QMessageBox.StandardButton.Discard |
+                    QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Save
+                )
+                
+                if reply == QMessageBox.StandardButton.Save:
+                    try:
+                        self._save_changes()
+                        self.thumbnail_widget.clear()
+                        event.accept()
+                    except Exception as e:
+                        QMessageBox.critical(
+                            self,
+                            "Error",
+                            f"Failed to save changes: {str(e)}"
+                        )
+                        event.ignore()
+                elif reply == QMessageBox.StandardButton.Discard:
+                    self.thumbnail_widget.clear()
+                    event.accept()
+                else:  # Cancel
+                    event.ignore()
+            else:
+                self.thumbnail_widget.clear()
+                event.accept()
+        else:
+            event.accept()
+
+    def _handle_thumbnail_context_menu(self, page_number: int, pos: QPoint) -> None:
+        """Handle thumbnail context menu."""
+        if not self.pdf_doc:
+            return
+
+        menu = QMenu(self)
+        add_bookmark_action = menu.addAction("Add Bookmark")
+        
+        action = menu.exec(pos)
+        if action == add_bookmark_action:
+            # Get bookmark title from user
+            title, ok = QInputDialog.getText(
                 self,
-                "Exit Application",
-                "Are you sure you want to exit?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
+                "Add Bookmark",
+                "Enter bookmark title:",
+                text=f"Page {page_number}"
             )
             
-            if reply == QMessageBox.StandardButton.Yes:
-                event.accept()
-            else:
-                event.ignore()
-        else:
-            event.accept() 
+            if ok and title.strip():
+                try:
+                    # Add bookmark to PDF
+                    self.pdf_doc.add_bookmark(title.strip(), page_number - 1)  # Convert to 0-based
+                    # Update bookmark panel
+                    self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
+                    # Update status and enable save button
+                    self.statusBar().showMessage(f"Added bookmark '{title}' at page {page_number}")
+                    self.save_action.setEnabled(True)
+                    logger.info("Added bookmark '%s' at page %d", title, page_number)
+                except Exception as e:
+                    QMessageBox.warning(
+                        self,
+                        "Error",
+                        f"Failed to add bookmark: {str(e)}"
+                    )
+                    logger.error("Failed to add bookmark: %s", str(e))
+
+    def _on_thumbnail_selected(self, page_num: int) -> None:
+        """Handle thumbnail selection."""
+        if not self.pdf_doc:
+            return
+            
+        # Update preview
+        self.pdf_doc.update_current_page(page_num - 1)  # Convert to 0-based
+        
+        # Update page label
+        self.page_label.setText(f"Page {page_num} of {self.pdf_doc.get_page_count()}")
+        
+        # Update status
+        self.statusBar().showMessage(f"Selected page {page_num}")
+        logger.debug("Selected page %d from thumbnail", page_num) 

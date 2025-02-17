@@ -6,10 +6,11 @@ including adding, removing, and modifying bookmarks with validation.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 import logging
 from enum import Enum
+import fitz  # PyMuPDF
 
 # Configure module logger
 logger = logging.getLogger(__name__)
@@ -24,6 +25,10 @@ class BookmarkValidationError(BookmarkError):
 
 class BookmarkOperationError(BookmarkError):
     """Exception raised when a bookmark operation fails."""
+    pass
+
+class BookmarkSaveError(BookmarkError):
+    """Exception raised when saving bookmarks fails."""
     pass
 
 class BookmarkLevel(Enum):
@@ -61,6 +66,32 @@ class BookmarkNode:
             raise BookmarkValidationError("Bookmark title cannot be empty")
         if self.page < 1:
             raise BookmarkValidationError(f"Invalid page number: {self.page}")
+            
+    def to_pdf_outline(self) -> List[Any]:
+        """
+        Convert the bookmark to a PDF outline list.
+        
+        Returns:
+            A list in the format expected by PyMuPDF: [level, title, page, ...]
+        """
+        result = []
+        
+        def add_node(node: 'BookmarkNode', level: int):
+            """Recursively add node and its children to the outline."""
+            if node.level != BookmarkLevel.ROOT:
+                # Add this node
+                result.append([
+                    level,
+                    node.title,
+                    node.page - 1  # Convert to 0-based indexing
+                ])
+            
+            # Add children
+            for child in node.children:
+                add_node(child, level + 1 if node.level != BookmarkLevel.ROOT else 1)
+        
+        add_node(self, 1)
+        return result
 
 class BookmarkManager:
     """
@@ -255,4 +286,109 @@ class BookmarkManager:
     def clear_modified_flag(self) -> None:
         """Clear the modified flag after saving."""
         self._modified = False
-        logger.info("Cleared modified flag") 
+        logger.info("Cleared modified flag")
+        
+    @classmethod
+    def from_pdf(cls, pdf_path: Path) -> 'BookmarkManager':
+        """
+        Create a BookmarkManager from a PDF file.
+        
+        Args:
+            pdf_path: Path to the PDF file
+            
+        Returns:
+            A new BookmarkManager initialized with the PDF's bookmarks
+            
+        Raises:
+            BookmarkError: If the PDF cannot be read
+        """
+        try:
+            doc = fitz.open(str(pdf_path))
+            manager = cls(doc.page_count)
+            
+            # Get the outline
+            toc = doc.get_toc()
+            
+            # Track parent nodes at each level
+            parents = {0: manager.root}
+            
+            # Process each outline item
+            for item in toc:
+                level, title, page = item[:3]  # Unpack level, title, page
+                
+                # Convert to 1-based page number
+                page = doc[page].number + 1
+                
+                # Convert level to BookmarkLevel
+                bookmark_level = BookmarkLevel(min(level, BookmarkLevel.H4.value))
+                
+                # Find the parent node
+                parent_level = level - 1
+                while parent_level not in parents and parent_level > 0:
+                    parent_level -= 1
+                parent = parents[parent_level]
+                
+                # Add the bookmark
+                bookmark = manager.add_bookmark(
+                    page=page,
+                    title=title,
+                    parent=parent,
+                    level=bookmark_level
+                )
+                
+                # Track this node as a potential parent
+                parents[level] = bookmark
+            
+            manager._modified = False  # Reset modified flag after loading
+            doc.close()
+            
+            return manager
+            
+        except Exception as e:
+            raise BookmarkError(f"Failed to read PDF bookmarks: {e}")
+            
+    def save_to_pdf(self, pdf_path: Path, output_path: Optional[Path] = None) -> None:
+        """
+        Save the current bookmarks to a PDF file.
+        
+        Args:
+            pdf_path: Path to the source PDF file
+            output_path: Optional path for the output file. If not provided,
+                        the source file will be modified in place.
+                        
+        Raises:
+            BookmarkSaveError: If saving fails
+        """
+        try:
+            # Open the PDF
+            doc = fitz.open(str(pdf_path))
+            
+            # Convert bookmarks to outline
+            outline = self.root.to_pdf_outline()
+            
+            # Set the outline
+            doc.set_toc(outline)
+            
+            # Save the PDF
+            save_path = output_path or pdf_path
+            if save_path == pdf_path:
+                # For in-place saves, use a temporary file
+                temp_path = pdf_path.with_suffix('.tmp.pdf')
+                try:
+                    doc.save(str(temp_path))
+                    doc.close()
+                    temp_path.replace(pdf_path)
+                finally:
+                    # Clean up temp file if it still exists
+                    if temp_path.exists():
+                        temp_path.unlink()
+            else:
+                # Save to new file
+                doc.save(str(save_path))
+                doc.close()
+            
+            self._modified = False
+            logger.info("Saved bookmarks to %s", save_path)
+            
+        except Exception as e:
+            raise BookmarkSaveError(f"Failed to save bookmarks: {e}") 

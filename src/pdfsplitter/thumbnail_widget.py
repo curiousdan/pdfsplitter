@@ -4,7 +4,7 @@ Widget for displaying PDF page thumbnails with selection and context menu suppor
 
 import logging
 from typing import Optional, List, Callable
-from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QPoint
 from PyQt6.QtGui import QImage, QPixmap, QContextMenuEvent
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QMenu, QScrollArea,
@@ -48,6 +48,20 @@ class ThumbnailLabel(QLabel):
         self.setLineWidth(1)
         self.setMinimumSize(QSize(200, 300))
         
+        # Set up selection style
+        self.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                border: 1px solid #ccc;
+                padding: 4px;
+            }
+            QLabel[selected="true"] {
+                background-color: #0078d4;
+                border: 2px solid #005a9e;
+            }
+        """)
+        self.setProperty("selected", False)
+        
         # Make the widget clickable
         self.setMouseTracking(True)
         
@@ -73,18 +87,15 @@ class ThumbnailLabel(QLabel):
         """
         if self.selected != selected:
             self.selected = selected
-            # Update visual style
-            self.setFrameStyle(
-                QFrame.Shape.Box | 
-                (QFrame.Shape.Panel if selected else QFrame.Shape.NoFrame)
-            )
-            self.setLineWidth(2 if selected else 1)
+            self.setProperty("selected", selected)
+            self.style().polish(self)  # Force style update
             
 class ThumbnailWidget(QWidget):
     """
     Widget for displaying a scrollable list of page thumbnails.
     
     This widget manages thumbnail display, selection, and context menus.
+    Implements lazy loading for better performance with large PDFs.
     """
     
     page_selected = pyqtSignal(int)  # Signal emitted when a page is selected
@@ -96,6 +107,9 @@ class ThumbnailWidget(QWidget):
         self.thumbnails: List[ThumbnailLabel] = []
         self.selected_page: Optional[int] = None
         self._context_menu_handler: Optional[Callable[[int, 'QPoint'], None]] = None
+        self._pdf_doc: Optional['PDFDocument'] = None
+        self._visible_range: tuple[int, int] = (0, 0)
+        self._loaded_thumbnails: set[int] = set()
         
         self._init_ui()
         
@@ -121,30 +135,98 @@ class ThumbnailWidget(QWidget):
         self.scroll_area.setWidget(self.content_widget)
         layout.addWidget(self.scroll_area)
         
-    def set_thumbnails(self, images: List[QImage]) -> None:
+        # Connect scroll events for lazy loading
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._handle_scroll)
+        
+    def set_pdf_document(self, pdf_doc: 'PDFDocument') -> None:
         """
-        Set the thumbnails to display.
+        Set the PDF document and initialize placeholders.
         
         Args:
-            images: List of thumbnail images to display
+            pdf_doc: The PDF document to display thumbnails for
         """
-        # Clear existing thumbnails
+        self._pdf_doc = pdf_doc
         self.clear()
         
-        # Create new thumbnail labels
-        for i, image in enumerate(images, start=1):
-            thumbnail = ThumbnailLabel(i, image, self.content_widget)
+        # Create placeholder labels
+        for i in range(pdf_doc.get_page_count()):
+            thumbnail = ThumbnailLabel(i + 1, self._create_placeholder_image(), self.content_widget)
             thumbnail.clicked.connect(self._handle_thumbnail_click)
             thumbnail.context_menu_requested.connect(self._handle_context_menu)
             self.content_layout.addWidget(thumbnail)
             self.thumbnails.append(thumbnail)
             
-        logger.info("Updated thumbnails: %d pages", len(images))
+        logger.info("Initialized thumbnails: %d pages", pdf_doc.get_page_count())
         
+    def _create_placeholder_image(self) -> QImage:
+        """Create a placeholder image for thumbnails."""
+        image = QImage(200, 300, QImage.Format.Format_RGB32)
+        image.fill(Qt.GlobalColor.lightGray)
+        return image
+        
+    def _handle_scroll(self, value: int) -> None:
+        """Handle scroll events for lazy loading."""
+        self._update_visible_thumbnails()
+        
+    def _update_visible_thumbnails(self) -> None:
+        """Update thumbnails that are currently visible."""
+        if not self._pdf_doc:
+            return
+            
+        # Calculate visible range
+        viewport = self.scroll_area.viewport()
+        viewport_rect = viewport.rect()
+        viewport_rect.moveTo(self.scroll_area.mapToGlobal(viewport.pos()))
+        
+        first_visible = -1
+        last_visible = -1
+        
+        # Find visible thumbnails
+        for i, thumbnail in enumerate(self.thumbnails):
+            thumbnail_rect = thumbnail.rect()
+            thumbnail_rect.moveTo(thumbnail.mapToGlobal(QPoint(0, 0)))
+            
+            if thumbnail_rect.intersects(viewport_rect):
+                if first_visible == -1:
+                    first_visible = i
+                last_visible = i
+                
+        if first_visible == -1:
+            # If no thumbnails are visible, use the current visible range
+            first_visible, last_visible = self._visible_range
+        
+        # Add buffer for smoother scrolling
+        buffer_size = 2
+        first_visible = max(0, first_visible - buffer_size)
+        last_visible = min(len(self.thumbnails) - 1, last_visible + buffer_size)
+        
+        # Update range if changed
+        if (first_visible, last_visible) != self._visible_range:
+            self._visible_range = (first_visible, last_visible)
+            self._load_visible_thumbnails()
+            
+    def _load_visible_thumbnails(self) -> None:
+        """Load thumbnails in the visible range."""
+        if not self._pdf_doc:
+            return
+            
+        first, last = self._visible_range
+        for i in range(first, last + 1):
+            if i not in self._loaded_thumbnails:
+                # Load the actual thumbnail
+                image = self._pdf_doc.generate_preview(
+                    i,
+                    size=(200, 300),
+                    is_thumbnail=True
+                )
+                self.thumbnails[i].setPixmap(QPixmap.fromImage(image))
+                self._loaded_thumbnails.add(i)
+                
     def clear(self) -> None:
         """Remove all thumbnails."""
         self.selected_page = None
-        self.thumbnails.clear()
+        self._visible_range = (0, 0)
+        self._loaded_thumbnails.clear()
         
         # Remove all widgets from the layout
         while self.content_layout.count():
@@ -152,6 +234,8 @@ class ThumbnailWidget(QWidget):
             if item.widget():
                 item.widget().deleteLater()
                 
+        self.thumbnails.clear()
+        
     def set_selected_page(self, page_number: Optional[int]) -> None:
         """
         Set the selected page.

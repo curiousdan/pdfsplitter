@@ -208,7 +208,8 @@ class RangeManagementWidget(QWidget):
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """Initialize the widget."""
         super().__init__(parent)
-        self.pdf_doc: Optional[PDFDocument] = None
+        self._pdf_doc: Optional[PDFDocument] = None
+        self._modified = False
         self.ranges: List[Tuple[str, int, int]] = []  # [(name, start_page, end_page), ...]
         
         # Create widgets
@@ -346,7 +347,7 @@ class RangeManagementWidget(QWidget):
         Returns:
             bool: True if current input is valid, False otherwise
         """
-        if not self.pdf_doc:
+        if not self._pdf_doc:
             logger.debug("Validation failed: No PDF document loaded")
             return False
         
@@ -361,7 +362,7 @@ class RangeManagementWidget(QWidget):
         
         # Create validator for current state
         validator = RangeValidator(
-            self.pdf_doc.get_page_count(),
+            self._pdf_doc.get_page_count(),
             [(n, s, e) for n, s, e in self.ranges]  # Create a copy to avoid modifying original
         )
         
@@ -396,7 +397,7 @@ class RangeManagementWidget(QWidget):
     
     def set_pdf_document(self, doc: Optional[PDFDocument]) -> None:
         """Set the PDF document to work with."""
-        self.pdf_doc = doc
+        self._pdf_doc = doc
         self.setEnabled(bool(doc))  # Enable widget only when PDF is loaded
         
         if doc:
@@ -429,7 +430,7 @@ class RangeManagementWidget(QWidget):
         """
         # Validate the range
         validator = RangeValidator(
-            self.pdf_doc.get_page_count() if self.pdf_doc else 0,
+            self._pdf_doc.get_page_count() if self._pdf_doc else 0,
             [(n, s, e) for n, s, e in self.ranges]
         )
         
@@ -465,7 +466,7 @@ class RangeManagementWidget(QWidget):
         if self.name_edit.text().strip() == name:
             self.name_edit.clear()
             next_page = end + 2  # Start from the next page after the current range
-            if next_page <= self.pdf_doc.get_page_count():
+            if next_page <= self._pdf_doc.get_page_count():
                 self.start_page.setValue(next_page)
                 self.end_page.setValue(next_page)
         
@@ -500,12 +501,12 @@ class RangeManagementWidget(QWidget):
     
     def _split_pdf(self) -> None:
         """Split the PDF according to the defined ranges."""
-        if not self.pdf_doc or not self.ranges:
+        if not self._pdf_doc or not self.ranges:
             return
         
         try:
             # Get output directory from input file path
-            output_dir = self.pdf_doc.file_path.parent
+            output_dir = self._pdf_doc.file_path.parent
             
             def split_work(progress_callback) -> None:
                 """Worker function to split PDF."""
@@ -514,7 +515,7 @@ class RangeManagementWidget(QWidget):
                     output_path = output_dir / f"{name}.pdf"
                     
                     # Extract pages with progress updates
-                    self.pdf_doc.extract_pages(
+                    self._pdf_doc.extract_pages(
                         start,
                         end,
                         output_path,
@@ -552,4 +553,30 @@ class RangeManagementWidget(QWidget):
                 self,
                 "Error",
                 f"Failed to split PDF: {error_msg}"
-            ) 
+            )
+
+    def has_unsaved_changes(self) -> bool:
+        """Check if there are unsaved changes."""
+        return self._modified
+
+    def _add_range(self, title: str, start: int, end: int) -> None:
+        """Add a new range to the list."""
+        try:
+            # Validate range
+            if not self._pdf_doc:
+                raise ValueError("No PDF document loaded")
+            if not (0 <= start <= end < self._pdf_doc.get_page_count()):
+                raise ValueError("Invalid page range")
+            
+            # Create range item
+            item = QListWidgetItem()
+            item.setText(f"{title} (Pages {start + 1}-{end + 1})")
+            item.setData(Qt.ItemDataRole.UserRole, (title, start, end))
+            self.range_list.addItem(item)
+            
+            self._modified = True
+            logger.debug("Added range: %s (pages %d-%d)", title, start + 1, end + 1)
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Error", str(e))
+            logger.error("Failed to add range: %s", str(e)) 

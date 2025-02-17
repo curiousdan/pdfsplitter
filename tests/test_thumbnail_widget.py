@@ -6,6 +6,22 @@ from PyQt6.QtGui import QImage, QContextMenuEvent
 from PyQt6.QtWidgets import QFrame
 
 from pdfsplitter.thumbnail_widget import ThumbnailLabel, ThumbnailWidget
+from pdfsplitter.pdf_document import PDFDocument
+
+class MockPDFDocument:
+    """Mock PDFDocument for testing."""
+    def __init__(self, num_pages: int = 3):
+        self.num_pages = num_pages
+        self.preview_calls = []
+
+    def get_page_count(self) -> int:
+        """Return the number of pages."""
+        return self.num_pages
+
+    def generate_preview(self, page_num: int, size: tuple[int, int], is_thumbnail: bool = False) -> QImage:
+        """Mock preview generation."""
+        self.preview_calls.append((page_num, size, is_thumbnail))
+        return QImage(size[0], size[1], QImage.Format.Format_RGB32)
 
 @pytest.fixture
 def sample_image():
@@ -25,6 +41,11 @@ def thumbnail_widget(qtbot):
     widget = ThumbnailWidget()
     qtbot.addWidget(widget)
     return widget
+
+@pytest.fixture
+def mock_pdf():
+    """Create a mock PDF document."""
+    return MockPDFDocument()
 
 def test_thumbnail_label_init(thumbnail_label):
     """Test ThumbnailLabel initialization."""
@@ -82,12 +103,12 @@ def test_thumbnail_widget_init(thumbnail_widget):
     assert thumbnail_widget.thumbnails == []
     assert thumbnail_widget.selected_page is None
     assert thumbnail_widget._context_menu_handler is None
+    assert thumbnail_widget._pdf_doc is None
 
-def test_thumbnail_widget_set_thumbnails(qtbot, thumbnail_widget, sample_image):
-    """Test setting thumbnails in the widget."""
-    # Add thumbnails
-    images = [sample_image] * 3
-    thumbnail_widget.set_thumbnails(images)
+def test_thumbnail_widget_set_pdf_document(qtbot, thumbnail_widget, mock_pdf):
+    """Test setting PDF document in the widget."""
+    # Set PDF document
+    thumbnail_widget.set_pdf_document(mock_pdf)
     
     # Verify thumbnails
     assert len(thumbnail_widget.thumbnails) == 3
@@ -95,11 +116,10 @@ def test_thumbnail_widget_set_thumbnails(qtbot, thumbnail_widget, sample_image):
         assert isinstance(thumbnail, ThumbnailLabel)
         assert thumbnail.page_number == i
 
-def test_thumbnail_widget_selection(qtbot, thumbnail_widget, sample_image):
+def test_thumbnail_widget_selection(qtbot, thumbnail_widget, mock_pdf):
     """Test thumbnail selection in the widget."""
-    # Add thumbnails
-    images = [sample_image] * 3
-    thumbnail_widget.set_thumbnails(images)
+    # Set PDF document
+    thumbnail_widget.set_pdf_document(mock_pdf)
     
     # Select page
     with qtbot.waitSignal(thumbnail_widget.page_selected):
@@ -117,11 +137,10 @@ def test_thumbnail_widget_selection(qtbot, thumbnail_widget, sample_image):
     assert not thumbnail_widget.thumbnails[0].selected
     assert thumbnail_widget.thumbnails[1].selected
 
-def test_thumbnail_widget_context_menu(qtbot, thumbnail_widget, sample_image):
+def test_thumbnail_widget_context_menu(qtbot, thumbnail_widget, mock_pdf):
     """Test context menu handling in the widget."""
-    # Add thumbnails
-    images = [sample_image] * 3
-    thumbnail_widget.set_thumbnails(images)
+    # Set PDF document
+    thumbnail_widget.set_pdf_document(mock_pdf)
     
     # Setup context menu handler
     menu_called = False
@@ -139,11 +158,10 @@ def test_thumbnail_widget_context_menu(qtbot, thumbnail_widget, sample_image):
     
     assert menu_called
 
-def test_thumbnail_widget_clear(qtbot, thumbnail_widget, sample_image):
+def test_thumbnail_widget_clear(qtbot, thumbnail_widget, mock_pdf):
     """Test clearing thumbnails from the widget."""
-    # Add thumbnails
-    images = [sample_image] * 3
-    thumbnail_widget.set_thumbnails(images)
+    # Set PDF document
+    thumbnail_widget.set_pdf_document(mock_pdf)
     assert len(thumbnail_widget.thumbnails) == 3
     
     # Select a page
@@ -154,4 +172,34 @@ def test_thumbnail_widget_clear(qtbot, thumbnail_widget, sample_image):
     thumbnail_widget.clear()
     assert thumbnail_widget.thumbnails == []
     assert thumbnail_widget.selected_page is None
-    assert thumbnail_widget.content_layout.count() == 0 
+    assert thumbnail_widget.content_layout.count() == 0
+
+def test_thumbnail_widget_lazy_loading(qtbot, thumbnail_widget, mock_pdf):
+    """Test lazy loading of thumbnails."""
+    # Set PDF document
+    thumbnail_widget.set_pdf_document(mock_pdf)
+    
+    # Initially, no thumbnails should be loaded since viewport is empty
+    assert len(mock_pdf.preview_calls) == 0
+    
+    # Simulate viewport showing first two thumbnails
+    thumbnail_widget._visible_range = (0, 1)
+    thumbnail_widget._load_visible_thumbnails()
+    
+    # Should have loaded first two thumbnails
+    assert len(mock_pdf.preview_calls) == 2
+    assert all(call[2] for call in mock_pdf.preview_calls)  # All should be thumbnails
+    assert all(0 <= call[0] <= 1 for call in mock_pdf.preview_calls)  # Pages 0-1
+    
+    # Clear preview calls to test further loading
+    mock_pdf.preview_calls.clear()
+    
+    # Simulate scrolling to show last thumbnail
+    thumbnail_widget._visible_range = (2, 2)
+    thumbnail_widget._load_visible_thumbnails()
+    
+    # Should have loaded only the last thumbnail
+    assert len(mock_pdf.preview_calls) == 1
+    call = mock_pdf.preview_calls[0]
+    assert call[2]  # Should be thumbnail
+    assert call[0] == 2  # Last page 

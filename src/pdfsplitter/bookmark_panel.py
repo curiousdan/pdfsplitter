@@ -8,7 +8,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction
 from PyQt6.QtWidgets import (
     QDockWidget, QWidget, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QPushButton, QLabel, QStyle, QSizePolicy
+    QPushButton, QLabel, QStyle, QSizePolicy, QMessageBox, QInputDialog
 )
 
 from .bookmark_detection import BookmarkNode, BookmarkTree, PageRange
@@ -30,6 +30,10 @@ class BookmarkPanel(QDockWidget):
             Qt.DockWidgetArea.RightDockWidgetArea
         )
         
+        self._init_ui()
+    
+    def _init_ui(self) -> None:
+        """Initialize the UI components."""
         # Create main widget and layout
         self._main_widget = QWidget()
         self._layout = QVBoxLayout(self._main_widget)
@@ -40,7 +44,13 @@ class BookmarkPanel(QDockWidget):
         self._tree = QTreeWidget()
         self._tree.setHeaderLabels(["Title", "Page"])
         self._tree.setColumnWidth(0, 200)  # Title column width
+        self._tree.setToolTip("Double-click to edit bookmark title")
+        # Remove drag-drop functionality
+        self._tree.setDragEnabled(False)
+        self._tree.setAcceptDrops(False)
+        self._tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self._tree.itemClicked.connect(self._on_item_clicked)
+        self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
         self._layout.addWidget(self._tree)
         
         # Add chapter ranges section
@@ -51,12 +61,22 @@ class BookmarkPanel(QDockWidget):
         self._ranges_tree = QTreeWidget()
         self._ranges_tree.setHeaderLabels(["Title", "Pages"])
         self._ranges_tree.setColumnWidth(0, 200)
+        self._ranges_tree.setToolTip("Click to select chapter range")
         self._ranges_tree.itemClicked.connect(self._on_range_clicked)
         self._layout.addWidget(self._ranges_tree)
         
-        # Add status label
+        # Add status label with better styling
         self._status_label = QLabel()
         self._status_label.setWordWrap(True)
+        self._status_label.setStyleSheet("""
+            QLabel {
+                color: #666;
+                font-size: 11px;
+                padding: 4px;
+                background: #f0f0f0;
+                border-radius: 4px;
+            }
+        """)
         self._status_label.setSizePolicy(
             QSizePolicy.Policy.Preferred,
             QSizePolicy.Policy.Minimum
@@ -118,6 +138,9 @@ class BookmarkPanel(QDockWidget):
         item.setText(1, str(node.page + 1))  # Display 1-based page numbers
         item.setData(0, Qt.ItemDataRole.UserRole, node.page)  # Store 0-based page
         
+        # Add tooltip with page info
+        item.setToolTip(0, f"Page {node.page + 1}")
+        
         # Add icon based on level
         if node.level == 0:
             icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileIcon)
@@ -133,9 +156,12 @@ class BookmarkPanel(QDockWidget):
             item = QTreeWidgetItem(self._ranges_tree)
             item.setText(0, range_.title)
             # Display 1-based page numbers
-            item.setText(1, f"{range_.start + 1}-{range_.end + 1}")
+            page_range = f"{range_.start + 1}-{range_.end + 1}"
+            item.setText(1, page_range)
             # Store 0-based page numbers
             item.setData(0, Qt.ItemDataRole.UserRole, (range_.start, range_.end))
+            # Add tooltip with page info
+            item.setToolTip(0, f"Pages {page_range}")
     
     def _count_bookmarks(self, node: BookmarkNode) -> int:
         """Count total number of bookmarks in tree."""
@@ -145,15 +171,19 @@ class BookmarkPanel(QDockWidget):
         return count
     
     def _update_status(self, message: str = "") -> None:
-        """Update the status label."""
-        self._status_label.setText(message)
-        self._status_label.setVisible(bool(message))
+        """Update the status label with improved formatting."""
+        if not message:
+            self._status_label.hide()
+        else:
+            self._status_label.setText(message)
+            self._status_label.show()
     
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int) -> None:
         """Handle bookmark item click."""
         page = item.data(0, Qt.ItemDataRole.UserRole)
         if page is not None:
             self.page_selected.emit(page)
+            self._update_status(f"Navigated to page {page + 1}")
             logger.debug("Selected bookmark page %d", page + 1)
     
     def _on_range_clicked(self, item: QTreeWidgetItem, column: int) -> None:
@@ -163,7 +193,81 @@ class BookmarkPanel(QDockWidget):
             start, end = range_data
             title = item.text(0)
             self.range_selected.emit(start, end, title)
+            self._update_status(f"Selected chapter '{title}' (pages {start + 1}-{end + 1})")
             logger.debug(
                 "Selected chapter range %s (pages %d-%d)",
                 title, start + 1, end + 1
-            ) 
+            )
+    
+    def _on_item_double_clicked(self, item: QTreeWidgetItem, column: int) -> None:
+        """Handle double-click to edit bookmark title."""
+        if not self._current_tree or column != 0:
+            return
+            
+        # Get the bookmark node
+        node = item.data(0, Qt.ItemDataRole.UserRole)
+        if not node:
+            return
+            
+        # Get new title from user
+        title, ok = QInputDialog.getText(
+            self,
+            "Edit Bookmark",
+            "Enter new title:",
+            text=node.title
+        )
+        
+        if ok and title.strip():
+            try:
+                # Update bookmark title
+                node.title = title.strip()
+                item.setText(0, title.strip())
+                logger.info("Updated bookmark title to '%s'", title)
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Error",
+                    f"Failed to update bookmark: {str(e)}"
+                )
+                logger.error("Failed to update bookmark: %s", str(e))
+
+    def select_page(self, page_number: int) -> None:
+        """
+        Select a bookmark item corresponding to the given page number.
+        
+        Args:
+            page_number: The page number to select (0-based)
+        """
+        if not self._current_tree:
+            return
+
+        def find_closest_bookmark(root: QTreeWidgetItem) -> Optional[QTreeWidgetItem]:
+            """Find the bookmark item closest to the given page number."""
+            closest_item = None
+            min_distance = float('inf')
+            
+            def traverse(item: QTreeWidgetItem):
+                nonlocal closest_item, min_distance
+                page = item.data(0, Qt.ItemDataRole.UserRole)
+                if page is not None:
+                    distance = abs(page - page_number)
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_item = item
+                
+                for i in range(item.childCount()):
+                    traverse(item.child(i))
+            
+            # Search through all items
+            for i in range(self._tree.topLevelItemCount()):
+                traverse(self._tree.topLevelItem(i))
+            
+            return closest_item
+
+        # Find and select the closest bookmark
+        if item := find_closest_bookmark(self._tree.invisibleRootItem()):
+            self._tree.setCurrentItem(item)
+            self._tree.scrollToItem(item)
+            page = item.data(0, Qt.ItemDataRole.UserRole)
+            self._update_status(f"Selected bookmark near page {page + 1}")
+            logger.debug("Selected bookmark for page %d", page + 1) 

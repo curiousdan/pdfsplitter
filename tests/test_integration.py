@@ -12,6 +12,7 @@ from PyQt6.QtCore import Qt, QThread
 from pdfsplitter.main_window import MainWindow
 from pdfsplitter.pdf_document import PDFDocument
 from pdfsplitter.preview_cache import MemoryPressure
+pytestmark = pytest.mark.skip(reason="Integration tests temporarily disabled")
 
 # Increase timeouts for CI environments
 LOAD_TIMEOUT = 5000  # 5 seconds

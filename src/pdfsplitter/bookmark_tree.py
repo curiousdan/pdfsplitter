@@ -5,7 +5,7 @@ Tree widget for displaying and managing PDF bookmarks with drag-drop support.
 import logging
 from typing import Optional, Dict, Any
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QShortcut, QKeySequence
 from PyQt6.QtWidgets import (
     QTreeWidget, QTreeWidgetItem, QMenu,
     QInputDialog, QMessageBox
@@ -72,6 +72,7 @@ class BookmarkTreeWidget(QTreeWidget):
         self.setDragDropMode(QTreeWidget.DragDropMode.InternalMove)
         self.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
         self.setExpandsOnDoubleClick(False)
+        self.setAlternatingRowColors(True)  # Visual improvement
         
         # Connect signals
         self.itemDoubleClicked.connect(self._handle_double_click)
@@ -80,14 +81,48 @@ class BookmarkTreeWidget(QTreeWidget):
         # Create context menu actions
         self._create_actions()
         
+        # Set up keyboard shortcuts
+        self._setup_shortcuts()
+        
+    def _setup_shortcuts(self) -> None:
+        """Set up keyboard shortcuts for common operations."""
+        # Delete shortcut
+        delete_shortcut = QShortcut(QKeySequence.StandardKey.Delete, self)
+        delete_shortcut.activated.connect(self._delete_current_item)
+        
+        # Edit shortcut (F2 is standard for rename)
+        edit_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F2), self)
+        edit_shortcut.activated.connect(self._edit_current_item)
+        
+        # Expand/collapse shortcuts
+        expand_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Right), self)
+        expand_shortcut.activated.connect(self._expand_current_item)
+        
+        collapse_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Left), self)
+        collapse_shortcut.activated.connect(self._collapse_current_item)
+        
     def _create_actions(self) -> None:
         """Create context menu actions."""
-        self.edit_action = QAction("Edit...", self)
+        self.edit_action = QAction("Edit... (F2)", self)
         self.edit_action.triggered.connect(self._edit_current_item)
+        self.edit_action.setShortcut(QKeySequence(Qt.Key.Key_F2))
         
-        self.delete_action = QAction("Delete", self)
+        self.delete_action = QAction("Delete (Del)", self)
         self.delete_action.triggered.connect(self._delete_current_item)
+        self.delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         
+    def _expand_current_item(self) -> None:
+        """Expand the currently selected item."""
+        item = self.currentItem()
+        if item:
+            self.expandItem(item)
+            
+    def _collapse_current_item(self) -> None:
+        """Collapse the currently selected item."""
+        item = self.currentItem()
+        if item:
+            self.collapseItem(item)
+            
     def contextMenuEvent(self, event) -> None:
         """Show context menu for bookmark operations."""
         item = self.itemAt(event.pos())
@@ -140,6 +175,11 @@ class BookmarkTreeWidget(QTreeWidget):
             # Let the base class handle the UI update
             super().dropEvent(event)
             
+            # Visual feedback
+            self.setCurrentItem(source_item)
+            source_item.setSelected(True)
+            self.scrollToItem(source_item)
+            
         except BookmarkError as e:
             QMessageBox.warning(self, "Cannot Move Bookmark", str(e))
             event.ignore()
@@ -172,6 +212,11 @@ class BookmarkTreeWidget(QTreeWidget):
                 item.node.title = title.strip()
                 item.update_display()
                 self.bookmark_edited.emit(item.node)
+                
+                # Visual feedback
+                item.setSelected(True)
+                self.scrollToItem(item)
+                
             except BookmarkError as e:
                 QMessageBox.warning(self, "Cannot Edit Bookmark", str(e))
                 
@@ -190,7 +235,14 @@ class BookmarkTreeWidget(QTreeWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             self.bookmark_deleted.emit(item.node)
+            parent = item.parent()
             self.takeTopLevelItem(self.indexOfTopLevelItem(item))
+            
+            # Visual feedback - select parent or next item
+            if parent:
+                self.setCurrentItem(parent)
+                parent.setSelected(True)
+                self.scrollToItem(parent)
             
     def update_from_manager(self, root_node: BookmarkNode) -> None:
         """
