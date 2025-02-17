@@ -449,8 +449,21 @@ class PDFDocument:
             # Get current outline
             current_toc = self.doc.get_toc()
             
-            # Add new bookmark at level 1 (top level)
-            current_toc.append([1, title, page])
+            # Create new bookmark entry (level 1 = top level)
+            # Convert from 0-based to 1-based page number for PyMuPDF
+            new_entry = [1, title, page + 1]
+            
+            # Find position to insert based on page number
+            insert_pos = 0
+            for i, entry in enumerate(current_toc):
+                level, _, target_page = entry
+                # Convert target_page back to 0-based for comparison
+                if level == 1 and target_page - 1 > page:
+                    break
+                insert_pos = i + 1
+            
+            # Insert at the correct position
+            current_toc.insert(insert_pos, new_entry)
             
             # Update PDF outline
             self.doc.set_toc(current_toc)

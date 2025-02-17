@@ -14,8 +14,10 @@ def sample_pdf(tmp_path):
     """Create a sample PDF file for testing."""
     import fitz
     doc = fitz.open()
-    page = doc.new_page(width=595, height=842)  # A4 size
-    page.insert_text((72, 72), "Test PDF")
+    # Create 5 pages
+    for i in range(5):
+        page = doc.new_page(width=595, height=842)  # A4 size
+        page.insert_text((72, 72), f"Page {i+1}")
     pdf_path = tmp_path / "test.pdf"
     doc.save(str(pdf_path))
     doc.close()
@@ -68,7 +70,7 @@ def mock_pdf_path(tmp_path):
 def test_load_valid_pdf(sample_pdf):
     """Test loading a valid PDF file."""
     doc = PDFDocument(sample_pdf)
-    assert doc.get_page_count() == 1
+    assert doc.get_page_count() == 5
 
 def test_load_nonexistent_pdf():
     """Test loading a non-existent PDF file."""
@@ -91,7 +93,7 @@ def test_generate_thumbnails(sample_pdf):
     """Test thumbnail generation."""
     doc = PDFDocument(sample_pdf)
     thumbnails = doc.generate_thumbnails()
-    assert len(thumbnails) == 1
+    assert len(thumbnails) == 5
     assert isinstance(thumbnails[0], QImage)
     
     # Check that aspect ratio is preserved within tolerance
@@ -99,15 +101,15 @@ def test_generate_thumbnails(sample_pdf):
     original_height = 842  # A4 height in points
     original_aspect = original_height / original_width
     
-    thumb = thumbnails[0]
-    thumb_aspect = thumb.height() / thumb.width()
-    
-    # Allow 1% tolerance in aspect ratio
-    assert abs(thumb_aspect - original_aspect) / original_aspect < 0.01
-    
-    # Allow ±2 pixels variation in width
-    target_width = 200
-    assert abs(thumb.width() - target_width) <= 2
+    for thumb in thumbnails:
+        thumb_aspect = thumb.height() / thumb.width()
+        
+        # Allow 1% tolerance in aspect ratio
+        assert abs(thumb_aspect - original_aspect) / original_aspect < 0.01
+        
+        # Allow ±2 pixels variation in width
+        target_width = 200
+        assert abs(thumb.width() - target_width) <= 2
 
 def test_extract_pages(sample_pdf, tmp_path):
     """Test page extraction."""
@@ -118,7 +120,7 @@ def test_extract_pages(sample_pdf, tmp_path):
     
     # Verify extracted PDF
     extracted_doc = PDFDocument(output_path)
-    assert extracted_doc.get_page_count() == 1
+    assert extracted_doc.get_page_count() == 5
 
 def test_extract_pages_invalid_range(sample_pdf, tmp_path):
     """Test page extraction with invalid page range."""
@@ -129,7 +131,7 @@ def test_extract_pages_invalid_range(sample_pdf, tmp_path):
         doc.extract_pages(-1, 0, output_path)
     
     with pytest.raises(ValueError, match="Invalid end page"):
-        doc.extract_pages(0, 1, output_path)
+        doc.extract_pages(0, 6, output_path)
     
     with pytest.raises(ValueError, match="Start page .* greater than end page"):
         doc.extract_pages(1, 0, output_path)
@@ -290,7 +292,7 @@ def test_pdf_document_preview_validation(mock_pdf_path):
             doc.generate_preview(-1)
         
         with pytest.raises(ValueError, match="Invalid page number"):
-            doc.generate_preview(10)  # Beyond last page
+            doc.generate_preview(6)  # Beyond last page
 
 def test_pdf_document_preview_error_handling(mock_pdf_path):
     """Test preview generation error handling."""
@@ -308,4 +310,41 @@ def test_pdf_document_preview_error_handling(mock_pdf_path):
             
             # Should wrap third-party errors in PDFLoadError
             with pytest.raises(PDFLoadError, match="Failed to generate preview for page"):
-                doc.generate_preview(0) 
+                doc.generate_preview(0)
+
+def test_bookmark_ordering(sample_pdf):
+    """Test that bookmarks are added in correct page order."""
+    doc = PDFDocument(sample_pdf)
+    
+    # Add bookmarks in non-sequential order
+    doc.add_bookmark("Chapter 5", 4)  # Page 5
+    doc.add_bookmark("Chapter 1", 0)  # Page 1
+    doc.add_bookmark("Chapter 3", 2)  # Page 3
+    
+    # Get the TOC and verify order
+    toc = doc.doc.get_toc()
+    
+    # Filter top-level bookmarks and their pages
+    top_level = [(title, page) for level, title, page in toc if level == 1]
+    
+    # Verify order by page number (TOC uses 1-based page numbers)
+    assert top_level == [
+        ("Chapter 1", 1),  # Page 1
+        ("Chapter 3", 3),  # Page 3
+        ("Chapter 5", 5),  # Page 5
+    ], "Bookmarks should be ordered by page number"
+    
+    # Add a bookmark between existing ones
+    doc.add_bookmark("Chapter 2", 1)  # Page 2
+    
+    # Get updated TOC and verify order
+    toc = doc.doc.get_toc()
+    top_level = [(title, page) for level, title, page in toc if level == 1]
+    
+    # Verify the new bookmark is inserted in the correct position (TOC uses 1-based page numbers)
+    assert top_level == [
+        ("Chapter 1", 1),  # Page 1
+        ("Chapter 2", 2),  # Page 2
+        ("Chapter 3", 3),  # Page 3
+        ("Chapter 5", 5),  # Page 5
+    ], "New bookmark should be inserted in correct page order" 
