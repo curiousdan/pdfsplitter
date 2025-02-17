@@ -31,8 +31,14 @@ def test_toolbar_creation(main_window):
     
     # Check actions
     actions = toolbar.actions()
-    assert len(actions) == 1
+    assert len(actions) == 2  # Now we have Open PDF and Show Bookmarks actions
     assert actions[0].text() == "Open PDF..."
+    assert actions[1].text() == "Show Bookmarks"
+    
+    # Verify bookmark action properties
+    bookmark_action = actions[1]
+    assert bookmark_action.isCheckable()
+    assert bookmark_action.isChecked()  # Should be checked by default
 
 def test_open_pdf_dialog_cancel(main_window, qtbot, monkeypatch):
     """Test canceling the open PDF dialog."""
