@@ -1,0 +1,16 @@
+# PDF Chapter Splitter CODEOWNERS
+
+# Default owners for everything in the repo
+* @danpark
+
+# PDF document handling
+src/pdfsplitter/pdf_document.py @danpark
+src/pdfsplitter/bookmark_*.py @danpark
+
+# UI components
+src/pdfsplitter/*_window.py @danpark
+src/pdfsplitter/*_widget.py @danpark
+src/pdfsplitter/*_panel.py @danpark
+
+# Test files
+tests/ @danpark

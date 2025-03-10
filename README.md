@@ -105,6 +105,14 @@ The project follows these coding standards:
 
 ## Contributing
 
+We welcome contributions to improve PDF Chapter Splitter! Please refer to our [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines on:
+
+1. Setting up your development environment
+2. Coding standards and style guides
+3. How to submit issues
+4. How to create pull requests
+
+Summary of the process:
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
@@ -113,7 +121,9 @@ The project follows these coding standards:
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the [MIT License](LICENSE) - see the LICENSE file for details.
+
+Copyright (c) 2025 Daniel Park
 
 ## Acknowledgments
 
