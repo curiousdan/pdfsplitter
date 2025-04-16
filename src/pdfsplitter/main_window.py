@@ -3,15 +3,15 @@ Main window for the PDF Chapter Splitter application.
 """
 import logging
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Callable
 
-from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QPoint
-from PyQt6.QtGui import QAction, QKeySequence, QPixmap, QImage
+from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QPoint, QThread
+from PyQt6.QtGui import QAction, QKeySequence, QPixmap, QImage, QIcon
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QFileDialog, QScrollArea, QLabel,
     QMessageBox, QStyle, QToolBar, QStatusBar, QInputDialog,
-    QMenu
+    QMenu, QDockWidget, QSplitter
 )
 
 from .pdf_document import PDFDocument, PDFLoadError
@@ -19,6 +19,8 @@ from .range_management import RangeManagementWidget
 from .progress_dialog import ProgressDialog, WorkerThread
 from .bookmark_panel import BookmarkPanel
 from .thumbnail_widget import ThumbnailWidget
+from .bookmark_detection import BookmarkTree, PageRange
+from .bookmark_manager import BookmarkManager
 
 logger = logging.getLogger(__name__)
 
@@ -235,13 +237,13 @@ class MainWindow(QMainWindow):
         logger.debug("Bookmark panel visibility set to %s", checked)
 
     def _select_file(self) -> None:
-        """Handle file selection."""
-        file_path, _ = QFileDialog.getOpenFileName(
+        """Handle file selection action."""
+        file_path = QFileDialog.getOpenFileName(
             self,
             "Select PDF File",
             str(Path.home()),
             "PDF Files (*.pdf)"
-        )
+        )[0]
         
         if not file_path:
             return
@@ -273,11 +275,17 @@ class MainWindow(QMainWindow):
             # Disable split button initially
             self.range_widget.set_split_enabled(False)
             
-            # Load and display bookmarks, which will update UI state
-            self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
+            # Create and initialize bookmark manager
+            self.bookmark_manager = BookmarkManager.from_pdf(Path(file_path))
+            
+            # Display bookmarks using the manager
+            self.bookmark_panel.display_bookmarks(self.bookmark_manager)
+            
+            # Connect changes_made signal to enable save
+            self.bookmark_panel.changes_made.connect(self._on_bookmark_changes)
             
             # Update save action
-            self.save_action.setEnabled(True)
+            self.save_action.setEnabled(False)
             
             # Update status
             self.statusBar().showMessage(f"Loaded PDF with {self.pdf_doc.get_page_count()} pages")
@@ -297,9 +305,29 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            self.pdf_doc.save_changes()
+            # Save changes using bookmark manager
+            if hasattr(self, 'bookmark_manager') and self.bookmark_manager.modified:
+                # Save bookmarks to PDF using the manager
+                self.bookmark_manager.save_to_pdf(self.pdf_doc.file_path)
+                
+                # Reload PDF document to reflect changes
+                file_path = self.pdf_doc.file_path
+                self.pdf_doc = PDFDocument(file_path)
+                
+                # Refresh bookmark related views
+                self.bookmark_panel.update_tree_from_manager()
+                
+                # Update status
+                self.statusBar().showMessage("Bookmark changes saved")
+                logger.info("Saved bookmark changes to %s", file_path)
+            else:
+                # Fall back to standard save method
+                self.pdf_doc.save_changes()
+                self.statusBar().showMessage("Changes saved")
+                
+            # Disable save action after successful save
             self.save_action.setEnabled(False)
-            self.statusBar().showMessage("Changes saved")
+            
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -311,9 +339,11 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         """Handle window close event."""
         if self.pdf_doc:
+            # Check for unsaved changes in bookmarks or other PDF changes
             has_unsaved_changes = (
                 self.pdf_doc.has_unsaved_changes() or
-                self.range_widget.has_unsaved_changes()
+                self.range_widget.has_unsaved_changes() or
+                (hasattr(self, 'bookmark_manager') and self.bookmark_manager.modified)
             )
             
             if has_unsaved_changes:
@@ -372,10 +402,16 @@ class MainWindow(QMainWindow):
                 try:
                     # Add bookmark to PDF
                     self.pdf_doc.add_bookmark(title.strip(), page_number - 1)  # Convert to 0-based
-                    # Update bookmark panel
-                    self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
+                    
+                    # Update bookmark manager and panel
+                    if hasattr(self, 'bookmark_manager'):
+                        # Recreate the bookmark manager to reflect changes
+                        self.bookmark_manager = BookmarkManager.from_pdf(self.pdf_doc.file_path)
+                        self.bookmark_panel.display_bookmarks(self.bookmark_manager)
+                    
                     # Enable save action
                     self.save_action.setEnabled(True)
+                    
                     # Update status
                     self.statusBar().showMessage(f"Added bookmark '{title}' at page {page_number}")
                     logger.info("Added bookmark '%s' at page %d", title, page_number)
@@ -429,15 +465,22 @@ class MainWindow(QMainWindow):
         Returns:
             List of (name, start_page, end_page) tuples representing chapter ranges
         """
-        if not self.pdf_doc or not hasattr(self.pdf_doc, 'get_bookmark_tree'):
-            return []
-        
-        bookmark_tree = self.pdf_doc.get_bookmark_tree()
-        if not bookmark_tree or not bookmark_tree.chapter_ranges:
-            return []
-        
-        # Convert PageRange objects to (name, start, end) tuples
-        ranges = [(r.title, r.start, r.end) for r in bookmark_tree.chapter_ranges]
-        logger.debug("Found %d chapter ranges from bookmarks", len(ranges))
-        
-        return ranges 
+        # If we have a bookmark tree from the PDF document, use that
+        if self.pdf_doc and hasattr(self.pdf_doc, 'get_bookmark_tree'):
+            bookmark_tree = self.pdf_doc.get_bookmark_tree()
+            if bookmark_tree and bookmark_tree.chapter_ranges:
+                # Convert PageRange objects to (name, start, end) tuples
+                ranges = [(r.title, r.start, r.end) for r in bookmark_tree.chapter_ranges]
+                logger.debug("Found %d chapter ranges from PDF document", len(ranges))
+                return ranges
+                
+        # Fallback: if we're using the bookmark manager but don't have ranges from tree
+        # We could implement chapter detection based on the bookmark manager structure
+        # For now, we'll just return an empty list
+        return []
+
+    def _on_bookmark_changes(self) -> None:
+        """Handle bookmark changes from the panel."""
+        if self.pdf_doc:
+            self.save_action.setEnabled(True)
+            self.statusBar().showMessage("Bookmark structure modified (unsaved)") 

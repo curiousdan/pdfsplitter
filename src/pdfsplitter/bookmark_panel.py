@@ -11,7 +11,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QStyle, QSizePolicy, QMessageBox, QInputDialog
 )
 
-from .bookmark_detection import BookmarkNode, BookmarkTree, PageRange
+from .bookmark_detection import BookmarkNode as DetectionNode
+from .bookmark_detection import BookmarkTree, PageRange
+from .bookmark_tree import BookmarkTreeWidget
+from .bookmark_manager import BookmarkNode, BookmarkManager, BookmarkLevel, BookmarkError
+from .bookmark_validation import DropPosition
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +25,7 @@ class BookmarkPanel(QDockWidget):
     # Signals
     page_selected = pyqtSignal(int)  # Emitted when a bookmark page is selected
     range_selected = pyqtSignal(int, int, str)  # Emitted when a chapter range is selected
+    changes_made = pyqtSignal()  # Emitted when bookmarks are modified
     
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """Initialize the bookmark panel."""
@@ -31,6 +36,7 @@ class BookmarkPanel(QDockWidget):
         )
         
         self._init_ui()
+        self.bookmark_manager = None  # Initialize, set later
     
     def _init_ui(self) -> None:
         """Initialize the UI components."""
@@ -40,17 +46,18 @@ class BookmarkPanel(QDockWidget):
         self._layout.setContentsMargins(8, 8, 8, 8)
         self._layout.setSpacing(8)
         
-        # Add bookmark tree
-        self._tree = QTreeWidget()
+        # Add bookmark tree - use custom BookmarkTreeWidget instead of QTreeWidget
+        self._tree = BookmarkTreeWidget()
         self._tree.setHeaderLabels(["Title", "Page"])
         self._tree.setColumnWidth(0, 200)  # Title column width
-        self._tree.setToolTip("Double-click to edit bookmark title")
-        # Remove drag-drop functionality
-        self._tree.setDragEnabled(False)
-        self._tree.setAcceptDrops(False)
+        self._tree.setToolTip("Drag to reorder bookmarks")
         self._tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection)
+        
+        # Connect signals
         self._tree.itemClicked.connect(self._on_item_clicked)
         self._tree.itemDoubleClicked.connect(self._on_item_double_clicked)
+        self._tree.bookmark_moved.connect(self._handle_bookmark_moved_in_model)
+        
         self._layout.addWidget(self._tree)
         
         # Add chapter ranges section
@@ -90,6 +97,91 @@ class BookmarkPanel(QDockWidget):
         self._current_tree: Optional[BookmarkTree] = None
         self._update_status()
     
+    def set_bookmark_manager(self, manager: BookmarkManager) -> None:
+        """Set the bookmark manager reference."""
+        self.bookmark_manager = manager
+        
+    def update_tree_from_manager(self) -> None:
+        """Updates the tree view based on the current state of the bookmark manager."""
+        if self.bookmark_manager:
+            self._tree.update_from_manager(self.bookmark_manager.root)
+        else:
+            self._tree.clear()
+            
+        # Count bookmarks
+        bookmark_count = len(self.bookmark_manager.get_bookmarks()) if self.bookmark_manager else 0
+        self._update_status(f"Displaying {bookmark_count} bookmarks")
+    
+    def display_bookmarks(self, manager: BookmarkManager) -> None:
+        """Set the bookmark manager and update the tree display."""
+        self.set_bookmark_manager(manager)
+        self.update_tree_from_manager()
+        
+    def _handle_bookmark_moved_in_model(
+        self, 
+        source_node: BookmarkNode, 
+        new_parent_node: BookmarkNode, 
+        position: DropPosition,
+        level_change: int
+    ) -> None:
+        """
+        Handle bookmark moves in the data model.
+        
+        This is called when a drag-drop operation completes.
+        
+        Args:
+            source_node: The bookmark being moved
+            new_parent_node: The new parent for the bookmark
+            position: Where the node was dropped
+            level_change: The suggested level change from validation
+        """
+        if not self.bookmark_manager:
+            logger.warning("Cannot update bookmark: no manager available")
+            return
+
+        try:
+            # Calculate new level based on position and parent
+            calculated_new_level = None
+            
+            if position == DropPosition.INSIDE and new_parent_node:
+                # Inside a node - level is parent's level + 1
+                calculated_new_level = BookmarkLevel(new_parent_node.level.value + 1)
+            elif new_parent_node:
+                # Before/after a node - same level as the target
+                calculated_new_level = new_parent_node.level
+            else:
+                # Root level
+                calculated_new_level = BookmarkLevel.H1
+                
+            # Clamp maximum level if necessary (H4 is max)
+            max_level = max(level.value for level in BookmarkLevel 
+                           if level != BookmarkLevel.ROOT)
+            if calculated_new_level and calculated_new_level.value > max_level:
+                calculated_new_level = BookmarkLevel(max_level)
+
+            # Update the model
+            self.bookmark_manager.move_bookmark(
+                source_node, 
+                new_parent_node, 
+                new_level=calculated_new_level
+            )
+            
+            # Signal changes
+            self.changes_made.emit()
+            self._update_status("Bookmark moved successfully")
+            
+        except BookmarkError as e:
+            logger.error(f"Error moving bookmark in manager: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to update bookmark structure: {e}")
+            # Refresh tree to revert UI on error
+            self.update_tree_from_manager()
+            
+        except Exception as e:
+            logger.error(f"Unexpected error moving bookmark: {e}")
+            QMessageBox.critical(self, "Error", f"An unexpected error occurred: {e}")
+            # Refresh tree to revert UI on error
+            self.update_tree_from_manager()
+            
     def update_bookmarks(self, tree: Optional[BookmarkTree]) -> None:
         """
         Update the displayed bookmark structure.
@@ -122,7 +214,7 @@ class BookmarkPanel(QDockWidget):
     
     def _add_bookmark_nodes(
         self,
-        node: BookmarkNode,
+        node: DetectionNode,
         parent: Optional[QTreeWidgetItem]
     ) -> None:
         """Add bookmark nodes to the tree widget recursively."""
@@ -163,7 +255,7 @@ class BookmarkPanel(QDockWidget):
             # Add tooltip with page info
             item.setToolTip(0, f"Pages {page_range}")
     
-    def _count_bookmarks(self, node: BookmarkNode) -> int:
+    def _count_bookmarks(self, node: DetectionNode) -> int:
         """Count total number of bookmarks in tree."""
         count = 0 if node.title == "root" else 1
         for child in node.children:
