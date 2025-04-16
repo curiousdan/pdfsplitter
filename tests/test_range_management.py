@@ -3,21 +3,15 @@ Tests for the range management components.
 """
 import pytest
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QMessageBox, QPushButton, QDialog
+from PyQt6.QtWidgets import QMessageBox, QPushButton, QDialog, QFileDialog
 from pathlib import Path
-from PyQt6.QtTest import QTest, QSignalSpy
+from PyQt6.QtTest import QTest
+from typing import List, Tuple
 import logging
+from unittest.mock import Mock
 
 from pdfsplitter.pdf_document import PDFDocument
 from pdfsplitter.range_management import RangeManagementWidget
-from tests.test_utils import (
-    MockRangeWidget,
-    MockSpinBox,
-    ValidationState,
-    create_mock_validator,
-    assert_validation_state,
-    assert_range_state
-)
 
 logger = logging.getLogger(__name__)
 
@@ -39,359 +33,112 @@ def mock_dialog(monkeypatch):
     monkeypatch.setattr(QMessageBox, "critical", lambda *args: None)
 
 @pytest.fixture
-def range_widget(qtbot, mock_dialog):
+def mock_file_dialog(monkeypatch):
+    """Mock file dialog to prevent popups during tests."""
+    def mock_get_existing_directory(*args, **kwargs):
+        return str(Path.home() / "test_output")
+    
+    monkeypatch.setattr("PyQt6.QtWidgets.QFileDialog.getExistingDirectory", mock_get_existing_directory)
+
+@pytest.fixture
+def range_widget(qtbot, mock_dialog, mock_file_dialog):
     """Create a RangeManagementWidget instance for testing."""
     widget = RangeManagementWidget()
     qtbot.addWidget(widget)
     return widget
 
-@pytest.fixture
-def mock_widget():
-    """Create a mock range management widget."""
-    return MockRangeWidget()
-
-@pytest.fixture
-def mock_spinbox():
-    """Create a mock spinbox."""
-    return MockSpinBox()
-
 def test_range_widget_initial_state(range_widget):
     """Test the initial state of the range management widget."""
     assert not range_widget.isEnabled()  # Should be disabled without PDF
-    assert len(range_widget.ranges) == 0
-    assert range_widget.range_list.count() == 0
+    assert not range_widget.split_button.isEnabled()  # Split button should be disabled
 
 def test_pdf_loading(range_widget, sample_pdf):
     """Test widget state after loading a PDF."""
     pdf_doc = PDFDocument(sample_pdf)
     range_widget.set_pdf_document(pdf_doc)
     
-    assert range_widget.isEnabled()
-    assert range_widget.start_page.value() == 1
-    assert range_widget.end_page.value() == pdf_doc.get_page_count()
-    assert not range_widget.add_button.isEnabled()  # No name entered
+    assert range_widget.isEnabled()  # Widget should be enabled with PDF
+    assert not range_widget.split_button.isEnabled()  # Split button should still be disabled until explicitly enabled
 
-def test_add_valid_range(range_widget, qtbot, sample_pdf):
-    """Test adding a valid chapter range."""
-    pdf_doc = PDFDocument(sample_pdf)
-    range_widget.set_pdf_document(pdf_doc)
-    
-    # Add a range
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(1)
-    range_widget.end_page.setValue(1)
-    QTest.qWait(100)
-    
-    assert range_widget.add_button.isEnabled()
-    
-    # Click add button
-    qtbot.mouseClick(range_widget.add_button, Qt.MouseButton.LeftButton)
-    
-    # Verify the range was added
-    assert len(range_widget.ranges) == 1
-    assert range_widget.range_list.count() == 1
-    name, start, end = range_widget.ranges[0]
-    assert name == "Chapter 1"
-    assert start == 0  # 0-based
-    assert end == 0    # 0-based
-
-def test_business_rules(range_widget, qtbot, sample_pdf):
-    """Test business rule enforcement."""
-    pdf_doc = PDFDocument(sample_pdf)
-    range_widget.set_pdf_document(pdf_doc)
-    
-    # Test initial state (empty name)
-    assert not range_widget.validate_input(), "Empty name should be invalid"
-    assert not range_widget.add_button.isEnabled()
-    
-    # Test valid input
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(1)
-    range_widget.end_page.setValue(1)
-    QTest.qWait(100)  # Allow for event processing
-    assert range_widget.validate_input(), "Valid input should pass validation"
-    assert range_widget.add_button.isEnabled()
-    
-    # Add the range
-    qtbot.mouseClick(range_widget.add_button, Qt.MouseButton.LeftButton)
-    assert len(range_widget.ranges) == 1, "Range should be added"
-    
-    # Test duplicate name rejection
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(2)
-    range_widget.end_page.setValue(2)
-    QTest.qWait(100)  # Allow for event processing
-    assert not range_widget.validate_input(), "Duplicate name should fail validation"
-    assert not range_widget.add_button.isEnabled()
-    
-    # Test unique name acceptance
-    range_widget.name_edit.setText("Chapter 2")
-    range_widget.start_page.setValue(2)  # Ensure start page is set
-    range_widget.end_page.setValue(2)    # Ensure end page is set
-    QTest.qWait(100)  # Allow for event processing
-    assert range_widget.validate_input(), "Unique name should pass validation"
-    assert range_widget.add_button.isEnabled()
-
-def test_range_removal(range_widget, qtbot, sample_pdf):
-    """Test removing a chapter range."""
-    pdf_doc = PDFDocument(sample_pdf)
-    range_widget.set_pdf_document(pdf_doc)
-    
-    # Add a range
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(1)
-    range_widget.end_page.setValue(1)
-    QTest.qWait(100)
-    qtbot.mouseClick(range_widget.add_button, Qt.MouseButton.LeftButton)
-    
-    # Select and remove the range
-    range_widget.range_list.setCurrentRow(0)
-    assert range_widget.remove_button.isEnabled()
-    qtbot.mouseClick(range_widget.remove_button, Qt.MouseButton.LeftButton)
-    
-    # Verify the range was removed
-    assert len(range_widget.ranges) == 0
-    assert range_widget.range_list.count() == 0
-    assert not range_widget.remove_button.isEnabled()
-    assert not range_widget.split_button.isEnabled()
-
-def test_split_button_state(range_widget, qtbot, sample_pdf):
+def test_split_button_state(range_widget, sample_pdf):
     """Test split button state management."""
     pdf_doc = PDFDocument(sample_pdf)
     range_widget.set_pdf_document(pdf_doc)
     
-    assert not range_widget.split_button.isEnabled()  # No ranges
+    # Initially disabled
+    assert not range_widget.split_button.isEnabled()
     
-    # Add a range
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(1)
-    range_widget.end_page.setValue(1)
-    QTest.qWait(100)
-    qtbot.mouseClick(range_widget.add_button, Qt.MouseButton.LeftButton)
+    # Enable via the method
+    range_widget.set_split_enabled(True)
+    assert range_widget.split_button.isEnabled()
     
-    assert range_widget.split_button.isEnabled()  # Has ranges
-    
-    # Remove the range
-    range_widget.range_list.setCurrentRow(0)
-    qtbot.mouseClick(range_widget.remove_button, Qt.MouseButton.LeftButton)
-    
-    assert not range_widget.split_button.isEnabled()  # No ranges again
-
-def test_split_pdf_operation(range_widget, qtbot, sample_pdf, tmp_path):
-    """Test PDF splitting operation."""
-    pdf_doc = PDFDocument(sample_pdf)
-    range_widget.set_pdf_document(pdf_doc)
-    
-    # Add a range
-    range_widget.name_edit.setText("Chapter 1")
-    range_widget.start_page.setValue(1)
-    range_widget.end_page.setValue(1)
-    QTest.qWait(100)
-    qtbot.mouseClick(range_widget.add_button, Qt.MouseButton.LeftButton)
-    
-    # Split the PDF
-    qtbot.mouseClick(range_widget.split_button, Qt.MouseButton.LeftButton)
-    
-    # Verify the output file exists
-    output_path = Path(str(sample_pdf)).parent / "Chapter 1.pdf"
-    assert output_path.exists()
-    
-    # Verify ranges are cleared after split
-    assert len(range_widget.ranges) == 0
-    assert range_widget.range_list.count() == 0
+    # Disable via the method
+    range_widget.set_split_enabled(False)
     assert not range_widget.split_button.isEnabled()
 
-def test_widget_initialization(mock_widget):
-    """Test widget initialization."""
-    assert mock_widget.validation_state.is_valid is False
-    assert not mock_widget.ranges
-
-def test_validation_change_signal(mock_widget):
-    """Test validation change signal."""
-    # Setup signal tracking
-    validation_states = []
-    mock_widget.validation_changed.connect(lambda state: validation_states.append(state))
+def test_split_pdf_operation(range_widget, qtbot, sample_pdf, tmp_path, monkeypatch):
+    """Test PDF splitting operation with provided ranges."""
+    pdf_doc = PDFDocument(sample_pdf)
     
-    # Test validation changes
-    mock_widget.simulate_validation_change(True)
-    assert validation_states == [True]
+    # Create a mock extract_pages method that creates empty files
+    def mock_extract_pages(self, start, end, output_path, progress_callback=None):
+        # Create an empty file at the output path
+        output_path.touch()
+        if progress_callback:
+            progress_callback(100, "Complete!")
     
-    mock_widget.simulate_validation_change(False, "Error", ["name"])
-    assert validation_states == [True, False]
+    # Apply mock
+    monkeypatch.setattr(PDFDocument, "extract_pages", mock_extract_pages)
     
-    # Verify final state
-    expected_state = ValidationState(False, "Error", ["name"])
-    assert_validation_state(mock_widget, expected_state)
-
-def test_range_addition(mock_widget):
-    """Test range addition."""
-    # Setup signal tracking
-    added_ranges = []
-    mock_widget.range_added.connect(lambda name, start, end: 
-        added_ranges.append((name, start, end)))
+    # Set PDF document to widget
+    range_widget.set_pdf_document(pdf_doc)
     
-    # Add ranges
-    mock_widget.simulate_range_added("Chapter 1", 1, 10)
-    mock_widget.simulate_range_added("Chapter 2", 11, 20)
-    
-    # Verify signals
-    assert added_ranges == [
-        ("Chapter 1", 1, 10),
-        ("Chapter 2", 11, 20)
+    # Create sample ranges
+    sample_ranges = [
+        ("Chapter 1", 0, 0),  # 0-based indices
+        ("Chapter 2", 1, 1)
     ]
     
-    # Verify state
-    expected_ranges = [
-        ("Chapter 1", 1, 10),
-        ("Chapter 2", 11, 20)
-    ]
-    assert_range_state(mock_widget, expected_ranges)
-
-def test_range_removal(mock_widget):
-    """Test range removal."""
-    # Setup initial ranges
-    mock_widget.simulate_range_added("Chapter 1", 1, 10)
-    mock_widget.simulate_range_added("Chapter 2", 11, 20)
-    mock_widget.simulate_range_added("Chapter 3", 21, 30)
+    # Enable the split button
+    range_widget.set_split_enabled(True)
     
-    # Setup signal tracking
-    removed_indices = []
-    mock_widget.range_removed.connect(lambda idx: removed_indices.append(idx))
+    # Create a test output directory
+    test_output = tmp_path / "test_output"
+    test_output.mkdir(exist_ok=True)
     
-    # Remove ranges
-    mock_widget.simulate_range_removed(1)  # Remove Chapter 2
-    assert removed_indices == [1]
+    # Mock the file dialog to return our test directory
+    def mock_get_dir(*args, **kwargs):
+        return str(test_output)
     
-    expected_ranges = [
-        ("Chapter 1", 1, 10),
-        ("Chapter 3", 21, 30)
-    ]
-    assert_range_state(mock_widget, expected_ranges)
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", mock_get_dir)
     
-    # Remove another range
-    mock_widget.simulate_range_removed(0)  # Remove Chapter 1
-    assert removed_indices == [1, 0]
+    # Mock the WorkerThread and ProgressDialog
+    class MockWorker:
+        def __init__(self):
+            self.operation = None
+            self.finished = Mock()
+        
+        def start(self):
+            # Directly call the operation with a mock progress callback
+            if self.operation:
+                self.operation(lambda value, message: None)
     
-    expected_ranges = [
-        ("Chapter 3", 21, 30)
-    ]
-    assert_range_state(mock_widget, expected_ranges)
-
-def test_spinbox_behavior(mock_spinbox):
-    """Test spinbox behavior."""
-    # Test initial state
-    assert mock_spinbox.value() == 0
-    assert not mock_spinbox.error_state
-    assert mock_spinbox.error_message == ""
+    class MockDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+        
+        def run_operation(self, worker):
+            worker.start()
+            worker.finished.emit()
     
-    # Test value changes
-    values_changed = []
-    mock_spinbox.value_changed.connect(lambda v: values_changed.append(v))
+    # Apply mocks
+    monkeypatch.setattr("pdfsplitter.range_management.WorkerThread", MockWorker)
+    monkeypatch.setattr("pdfsplitter.range_management.ProgressDialog", MockDialog)
     
-    mock_spinbox.setValue(50)
-    assert mock_spinbox.value() == 50
-    assert values_changed == [50]
+    # Call the split method directly with the sample ranges
+    range_widget._split_pdf(sample_ranges)
     
-    # Test bounds
-    mock_spinbox.setMinimum(20)
-    assert mock_spinbox.value() == 50  # Unchanged
-    
-    mock_spinbox.setValue(10)  # Below minimum
-    assert mock_spinbox.value() == 20  # Clamped to minimum
-    assert values_changed == [50, 20]
-    
-    mock_spinbox.setMaximum(40)
-    assert mock_spinbox.value() == 20  # Unchanged
-    
-    mock_spinbox.setValue(60)  # Above maximum
-    assert mock_spinbox.value() == 40  # Clamped to maximum
-    assert values_changed == [50, 20, 40]
-
-def test_validation_with_mock_validator(mock_widget):
-    """Test validation using mock validator."""
-    validator = create_mock_validator(
-        name_valid=False,
-        range_valid=True,
-        name_error="Invalid name",
-        range_error=""
-    )
-    
-    # Simulate validation
-    mock_widget.validate_input.return_value = False
-    mock_widget.simulate_validation_change(
-        False,
-        "Invalid name",
-        ["name"]
-    )
-    
-    # Verify validation state
-    expected_state = ValidationState(
-        is_valid=False,
-        error_message="Invalid name",
-        error_fields=["name"]
-    )
-    assert_validation_state(mock_widget, expected_state)
-    
-    # Test with valid input
-    validator = create_mock_validator(
-        name_valid=True,
-        range_valid=True
-    )
-    
-    mock_widget.validate_input.return_value = True
-    mock_widget.simulate_validation_change(True)
-    
-    expected_state = ValidationState(is_valid=True)
-    assert_validation_state(mock_widget, expected_state)
-
-def test_error_state_propagation(mock_widget):
-    """Test error state propagation."""
-    # Set error state
-    mock_widget.simulate_validation_change(
-        False,
-        "Multiple errors",
-        ["name", "start", "end"]
-    )
-    
-    # Verify error state was set
-    mock_widget.set_error_state.assert_called_once()
-    
-    # Verify validation state
-    expected_state = ValidationState(
-        is_valid=False,
-        error_message="Multiple errors",
-        error_fields=["name", "start", "end"]
-    )
-    assert_validation_state(mock_widget, expected_state)
-
-def test_range_validation_integration(mock_widget):
-    """Test range validation integration."""
-    # Setup mock validator
-    validator = create_mock_validator()
-    
-    # Test valid range addition
-    mock_widget.validate_input.return_value = True
-    mock_widget.simulate_range_added("Chapter 1", 1, 10)
-    
-    # Verify range was added
-    expected_ranges = [("Chapter 1", 1, 10)]
-    assert_range_state(mock_widget, expected_ranges)
-    
-    # Test invalid range addition
-    mock_widget.validate_input.return_value = False
-    mock_widget.simulate_validation_change(
-        False,
-        "Invalid range",
-        ["start", "end"]
-    )
-    
-    # Verify range was not added
-    assert_range_state(mock_widget, expected_ranges)  # Still only one range
-    
-    # Verify error state
-    expected_state = ValidationState(
-        is_valid=False,
-        error_message="Invalid range",
-        error_fields=["start", "end"]
-    )
-    assert_validation_state(mock_widget, expected_state) 
+    # Verify the output files exist
+    for name, _, _ in sample_ranges:
+        output_path = test_output / f"{name}.pdf"
+        assert output_path.exists(), f"Expected output file {output_path} does not exist" 

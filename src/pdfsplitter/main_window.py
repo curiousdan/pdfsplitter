@@ -3,7 +3,7 @@ Main window for the PDF Chapter Splitter application.
 """
 import logging
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QObject, QPoint
 from PyQt6.QtGui import QAction, QKeySequence, QPixmap, QImage
@@ -91,11 +91,12 @@ class MainWindow(QMainWindow):
         
         # Add range management widget
         self.range_widget = RangeManagementWidget()
+        self.range_widget.split_button.clicked.connect(self._trigger_split)
         h_layout.addWidget(self.range_widget)
         
         # Set stretch factors
-        h_layout.setStretch(0, 1)  # Thumbnail area
-        h_layout.setStretch(1, 1)  # Range management
+        h_layout.setStretch(0, 2)  # Thumbnail area (more space)
+        h_layout.setStretch(1, 1)  # Range management (less space since we removed input fields)
         
         layout.addLayout(h_layout)
         
@@ -221,18 +222,12 @@ class MainWindow(QMainWindow):
         if not self.pdf_doc:
             return
             
-        # Update range management widget with selected range
-        try:
-            # start and end are already 0-based from bookmark panel
-            self.range_widget._add_range(title, start, end)
-            logger.debug("Added range %s (pages %d-%d)", title, start + 1, end + 1)
-        except Exception as e:
-            logger.error("Failed to add range: %s", str(e))
-            QMessageBox.warning(
-                self,
-                "Warning",
-                f"Failed to add range: {str(e)}"
-            )
+        # Enable the split button when a range is selected
+        self.range_widget.set_split_enabled(True)
+        
+        # Update status
+        self.statusBar().showMessage(f"Selected chapter '{title}' (pages {start + 1}-{end + 1})")
+        logger.debug("Selected range %s (pages %d-%d)", title, start + 1, end + 1)
     
     def _toggle_bookmark_panel(self, checked: bool) -> None:
         """Toggle bookmark panel visibility."""
@@ -250,30 +245,48 @@ class MainWindow(QMainWindow):
         
         if not file_path:
             return
-        
+            
         try:
             # Load PDF document
-            self.pdf_doc = PDFDocument(Path(file_path))
-            self.statusBar().showMessage(f"Loaded PDF: {Path(file_path).name}")
-            
-            # Update thumbnail widget
-            self.thumbnail_widget.set_pdf_document(self.pdf_doc)
-            
-            # Update range management widget
-            self.range_widget.set_pdf_document(self.pdf_doc)
-            
-            # Update bookmark panel
-            self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
+            self.pdf_doc = PDFDocument(file_path)
             
             # Update window title
             self.setWindowTitle(f"PDF Chapter Splitter - {Path(file_path).name}")
             
-            logger.info("Successfully loaded PDF: %s", file_path)
+            # Update thumbnail view
+            dialog = ProgressDialog("Loading PDF", "Generating thumbnails...", self)
+            worker = WorkerThread()
+            
+            generator = ThumbnailGenerator(self.pdf_doc, self.thumbnail_size)
+            generator.thumbnails_ready.connect(
+                lambda thumbnails: self.thumbnail_widget.set_thumbnails(
+                    thumbnails, self.pdf_doc.get_page_count()
+                )
+            )
+            
+            worker.operation = generator.generate
+            dialog.run_operation(worker)
+            
+            # Update range widget and bookmark panel
+            self.range_widget.set_pdf_document(self.pdf_doc)
+            
+            # Disable split button initially
+            self.range_widget.set_split_enabled(False)
+            
+            # Load and display bookmarks, which will update UI state
+            self.bookmark_panel.update_bookmarks(self.pdf_doc.get_bookmark_tree())
+            
+            # Update save action
+            self.save_action.setEnabled(True)
+            
+            # Update status
+            self.statusBar().showMessage(f"Loaded PDF with {self.pdf_doc.get_page_count()} pages")
+            logger.info("Loaded PDF: %s", file_path)
+            
         except PDFLoadError as e:
-            self.statusBar().showMessage("Failed to load PDF")
             QMessageBox.critical(
                 self,
-                "Error",
+                "Error Loading PDF",
                 f"Failed to load PDF: {str(e)}"
             )
             logger.error("Failed to load PDF: %s", str(e))
@@ -381,4 +394,50 @@ class MainWindow(QMainWindow):
             
         # Update bookmark panel selection
         self.bookmark_panel.select_page(page_number - 1)  # Convert to 0-based
-        logger.debug("Selected page %d from thumbnail", page_number) 
+        logger.debug("Selected page %d from thumbnail", page_number)
+    
+    def _trigger_split(self) -> None:
+        """Handle split button click by obtaining ranges from bookmark panel and triggering PDF split."""
+        if not self.pdf_doc:
+            logger.warning("Cannot split PDF: no PDF document loaded")
+            QMessageBox.warning(
+                self,
+                "Cannot Split PDF",
+                "No PDF document is loaded."
+            )
+            return
+        
+        # Get chapter ranges from the bookmark panel
+        chapter_ranges = self._get_chapter_ranges_from_bookmarks()
+        
+        if not chapter_ranges:
+            logger.warning("Cannot split PDF: no chapter ranges available")
+            QMessageBox.warning(
+                self,
+                "Cannot Split PDF",
+                "No chapter ranges are available. Please ensure the PDF has bookmarks or chapter structure."
+            )
+            return
+        
+        # Call the range widget's split method with the ranges
+        self.range_widget._split_pdf(chapter_ranges)
+    
+    def _get_chapter_ranges_from_bookmarks(self) -> List[Tuple[str, int, int]]:
+        """
+        Get the chapter ranges from the bookmark panel.
+        
+        Returns:
+            List of (name, start_page, end_page) tuples representing chapter ranges
+        """
+        if not self.pdf_doc or not hasattr(self.pdf_doc, 'get_bookmark_tree'):
+            return []
+        
+        bookmark_tree = self.pdf_doc.get_bookmark_tree()
+        if not bookmark_tree or not bookmark_tree.chapter_ranges:
+            return []
+        
+        # Convert PageRange objects to (name, start, end) tuples
+        ranges = [(r.title, r.start, r.end) for r in bookmark_tree.chapter_ranges]
+        logger.debug("Found %d chapter ranges from bookmarks", len(ranges))
+        
+        return ranges 

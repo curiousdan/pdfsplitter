@@ -7,22 +7,16 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import List, Optional, Tuple, Set
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QValidator
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
-    QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
     QApplication,
+    QFileDialog,
 )
 
 from .pdf_document import PDFDocument, PDFLoadError
@@ -185,398 +179,126 @@ class ChapterRange:
         
         return True, ""
 
-class RangeSpinBox(QSpinBox):
-    """Custom spinbox that handles range input."""
-    
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
-        """Initialize the spinbox."""
-        super().__init__(parent)
-        self.setMinimum(1)  # Pages are 1-based for users
-        self.valueChanged.connect(self._on_value_changed)
-    
-    def _on_value_changed(self, value: int) -> None:
-        """Handle value changes."""
-        if hasattr(self.parent(), "handle_spinbox_change"):
-            self.parent().handle_spinbox_change(self, value)
-
 class RangeManagementWidget(QWidget):
-    """Widget for managing chapter ranges."""
-    
-    # Signal emitted when ranges are updated
-    ranges_updated = pyqtSignal()
+    """Widget for managing PDF splitting."""
     
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         """Initialize the widget."""
         super().__init__(parent)
         self._pdf_doc: Optional[PDFDocument] = None
         self._modified = False
-        self.ranges: List[Tuple[str, int, int]] = []  # [(name, start_page, end_page), ...]
         
-        # Create widgets
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Chapter name")
-        self.name_edit.textChanged.connect(self._update_validation)
-        self.name_edit.setToolTip("Enter a unique name for this chapter")
+        # Create layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
         
-        # Create spinboxes with labels
-        spinbox_layout = QHBoxLayout()
-        
-        start_label = QLabel("Start:")
-        self.start_page = RangeSpinBox()
-        self.start_page.setMinimum(1)
-        self.start_page.valueChanged.connect(self._update_validation)
-        self.start_page.setToolTip("First page of the chapter")
-        spinbox_layout.addWidget(start_label)
-        spinbox_layout.addWidget(self.start_page)
-        
-        end_label = QLabel("End:")
-        self.end_page = RangeSpinBox()
-        self.end_page.setMinimum(1)
-        self.end_page.valueChanged.connect(self._update_validation)
-        self.end_page.setToolTip("Last page of the chapter")
-        spinbox_layout.addWidget(end_label)
-        spinbox_layout.addWidget(self.end_page)
-        
-        # Create buttons
-        self.add_button = QPushButton("Add")
-        self.add_button.setEnabled(False)
-        self.add_button.clicked.connect(self._on_add_clicked)
-        self.add_button.setToolTip("Add this chapter range")
-        
+        # Create split button
+        button_layout = QHBoxLayout()
         self.split_button = QPushButton("Split PDF")
         self.split_button.setEnabled(False)
-        self.split_button.clicked.connect(self._split_pdf)
         self.split_button.setToolTip("Split PDF into separate files for each chapter")
-        
-        # Create range list widget with label
-        list_label = QLabel("Chapter Ranges:")
-        self.range_list = QListWidget()
-        self.range_list.setSelectionMode(QListWidget.SelectionMode.SingleSelection)
-        self.range_list.setToolTip("List of defined chapter ranges")
-        
-        # Create remove button
-        self.remove_button = QPushButton("Remove")
-        self.remove_button.setEnabled(False)
-        self.remove_button.clicked.connect(self._remove_range)
-        self.remove_button.setToolTip("Remove selected chapter range")
-        
-        # Connect range list selection to remove button
-        self.range_list.itemSelectionChanged.connect(
-            lambda: self.remove_button.setEnabled(bool(self.range_list.selectedItems()))
-        )
-        
-        # Layout
-        main_layout = QVBoxLayout()
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
-        
-        # Input group
-        input_group = QGroupBox("Add Chapter")
-        input_layout = QVBoxLayout()
-        input_layout.setSpacing(10)
-        
-        name_layout = QHBoxLayout()
-        name_layout.addWidget(QLabel("Name:"))
-        name_layout.addWidget(self.name_edit)
-        
-        input_layout.addLayout(name_layout)
-        input_layout.addLayout(spinbox_layout)
-        input_layout.addWidget(self.add_button)
-        input_group.setLayout(input_layout)
-        
-        main_layout.addWidget(input_group)
-        
-        # Range list group
-        list_group = QGroupBox("Chapters")
-        list_layout = QVBoxLayout()
-        list_layout.addWidget(self.range_list)
-        
-        # Button layout
-        button_layout = QHBoxLayout()
-        button_layout.addWidget(self.remove_button)
         button_layout.addStretch()
         button_layout.addWidget(self.split_button)
-        list_layout.addLayout(button_layout)
         
-        list_group.setLayout(list_layout)
-        main_layout.addWidget(list_group)
+        main_layout.addLayout(button_layout)
         
-        self.setLayout(main_layout)
-        self.setEnabled(False)  # Initially disabled until PDF is loaded
-        
-        # Initial validation
-        self._update_validation()
-    
-    def handle_spinbox_change(self, spinbox: RangeSpinBox, value: int) -> None:
-        """Handle spinbox value changes."""
-        self._update_validation()
-    
-    def _update_validation(self) -> None:
-        """Update UI state based on validation results."""
-        is_valid = self.validate_input()
-        self.add_button.setEnabled(is_valid)
-        self._update_tooltips(is_valid)
-    
-    def _update_tooltips(self, is_valid: bool) -> None:
-        """Update tooltips based on validation results."""
-        if is_valid:
-            self.name_edit.setStyleSheet("")
-            self.start_page.setStyleSheet("")
-            self.end_page.setStyleSheet("")
-            self.name_edit.setToolTip("Enter a unique name for this chapter")
-            self.start_page.setToolTip("First page of the chapter")
-            self.end_page.setToolTip("Last page of the chapter")
-            return
-        
-        error_style = "border: 1px solid red;"
-        
-        self.name_edit.setStyleSheet(error_style)
-        self.name_edit.setToolTip("Invalid input")
-        self.start_page.setStyleSheet(error_style)
-        self.end_page.setStyleSheet(error_style)
-        self.start_page.setToolTip("Invalid input")
-        self.end_page.setToolTip("Invalid input")
-    
-    def validate_input(self) -> bool:
-        """
-        Validate current input against business rules.
-        
-        This is a public method primarily for testing, but can also be used
-        to check validity without side effects.
-        
-        Returns:
-            bool: True if current input is valid, False otherwise
-        """
-        if not self._pdf_doc:
-            logger.debug("Validation failed: No PDF document loaded")
-            return False
-        
-        name = self.name_edit.text().strip()
-        start = self.start_page.value()
-        end = self.end_page.value()
-        
-        logger.debug(
-            "Validating input - name: %s, start: %d, end: %d, current ranges: %s",
-            name, start, end, self.ranges
-        )
-        
-        # Create validator for current state
-        validator = RangeValidator(
-            self._pdf_doc.get_page_count(),
-            [(n, s, e) for n, s, e in self.ranges]  # Create a copy to avoid modifying original
-        )
-        
-        # Validate name first
-        name_result = validator.validate_name(name)
-        if not name_result.is_valid:
-            logger.debug("Name validation failed: %s", name_result.error_message)
-            self._update_tooltips(False)
-            return False
-        
-        # Then validate page range - convert to 0-based for internal validation
-        range_result = validator.validate_page_range(start - 1, end - 1)
-        if not range_result.is_valid:
-            # Only fail if it's not a range overlap
-            if range_result.error_type != ValidationError.RANGE_OVERLAP:
-                logger.debug("Range validation failed: %s", range_result.error_message)
-                self._update_tooltips(False)
-                return False
-            
-            # For range overlaps, check if it's with the same name
-            # If it's a different name, it's valid
-            for existing_name, _, _ in self.ranges:
-                if existing_name == name:
-                    logger.debug("Range validation failed: duplicate name")
-                    self._update_tooltips(False)
-                    return False
-        
-        # All valid
-        logger.debug("Validation passed")
-        self._update_tooltips(True)
-        return True
+        # Disable widget initially
+        self.setEnabled(False)
     
     def set_pdf_document(self, doc: Optional[PDFDocument]) -> None:
-        """Set the PDF document to work with."""
-        self._pdf_doc = doc
-        self.setEnabled(bool(doc))  # Enable widget only when PDF is loaded
-        
-        if doc:
-            max_pages = doc.get_page_count()
-            self.start_page.setMaximum(max_pages)
-            self.end_page.setMaximum(max_pages)
-        else:
-            self.start_page.setMaximum(1)
-            self.end_page.setMaximum(1)
-            self.range_list.clear()
-            self.ranges.clear()
-            
-        self._update_validation()
-    
-    def _on_add_clicked(self) -> None:
-        """Handle add button click."""
-        name = self.name_edit.text().strip()
-        start = self.start_page.value()
-        end = self.end_page.value()
-        self._add_range(name, start - 1, end - 1)  # Convert to 0-based
-    
-    def _add_range(self, name: str, start: int, end: int) -> None:
         """
-        Add a new chapter range.
+        Set the PDF document for the widget.
         
         Args:
-            name: Name of the chapter
-            start: Start page (0-based)
-            end: End page (0-based)
+            doc: The PDF document to use, or None to clear
         """
-        # Validate the range
-        validator = RangeValidator(
-            self._pdf_doc.get_page_count() if self._pdf_doc else 0,
-            [(n, s, e) for n, s, e in self.ranges]
-        )
-        
-        name_result = validator.validate_name(name)
-        range_result = validator.validate_page_range(start, end)
-        
-        if not name_result.is_valid:
-            logger.warning("Invalid range name: %s", name_result.error_message)
-            QMessageBox.warning(
-                self,
-                "Invalid Range",
-                name_result.error_message
-            )
-            return
-            
-        if not range_result.is_valid:
-            logger.warning("Invalid page range: %s", range_result.error_message)
-            QMessageBox.warning(
-                self,
-                "Invalid Range",
-                range_result.error_message
-            )
-            return
-        
-        # Store the range
-        self.ranges.append((name, start, end))
-        
-        # Add to list widget (display 1-based page numbers)
-        item = QListWidgetItem(f"{name}: Pages {start + 1}-{end + 1}")
-        self.range_list.addItem(item)
-        
-        # Clear inputs and set next available page if this was added via UI
-        if self.name_edit.text().strip() == name:
-            self.name_edit.clear()
-            next_page = end + 2  # Start from the next page after the current range
-            if next_page <= self._pdf_doc.get_page_count():
-                self.start_page.setValue(next_page)
-                self.end_page.setValue(next_page)
-        
-        # Update UI state
-        self.split_button.setEnabled(True)
-        self._update_validation()
-        
-        # Log for debugging
-        logger.debug(
-            "Added range - name: %s, start: %d, end: %d, current ranges: %s",
-            name, start + 1, end + 1, self.ranges
-        )
-        
-        # Emit signal
-        self.ranges_updated.emit()
+        self._pdf_doc = doc
+        self.setEnabled(doc is not None)
     
-    def _remove_range(self) -> None:
-        """Remove the selected range."""
-        current = self.range_list.currentRow()
-        if current >= 0:
-            removed = self.ranges.pop(current)
-            self.range_list.takeItem(current)
-            self.ranges_updated.emit()
-            logger.info("Removed chapter range: %s", removed[0])
-            self._update_button_states()
-            self._update_validation()
+    def set_split_enabled(self, enabled: bool) -> None:
+        """
+        Set whether the split button is enabled.
+        
+        Args:
+            enabled: Whether to enable the button
+        """
+        self.split_button.setEnabled(enabled)
     
     def _update_button_states(self) -> None:
-        """Update button states based on current selection and ranges."""
-        self.remove_button.setEnabled(bool(self.range_list.selectedItems()))
-        self.split_button.setEnabled(bool(self.ranges))
+        """Update the state of buttons based on current state."""
+        has_pdf = self._pdf_doc is not None
+        self.split_button.setEnabled(has_pdf)  # Now controlled externally via set_split_enabled
     
-    def _split_pdf(self) -> None:
-        """Split the PDF according to the defined ranges."""
-        if not self._pdf_doc or not self.ranges:
+    def _split_pdf(self, ranges_to_split: List[Tuple[str, int, int]]) -> None:
+        """
+        Split the PDF into separate files based on the provided ranges.
+        
+        Args:
+            ranges_to_split: List of (name, start_page, end_page) tuples representing chapter ranges
+        """
+        if not self._pdf_doc or not ranges_to_split:
+            logger.warning("Cannot split PDF: no PDF document or no ranges")
             return
         
-        try:
-            # Get output directory from input file path
-            output_dir = self._pdf_doc.file_path.parent
+        # Prompt for output directory
+        output_dir = Path(QFileDialog.getExistingDirectory(
+            self,
+            "Select Output Directory",
+            str(Path.home()),
+            QFileDialog.Option.ShowDirsOnly
+        ))
+        
+        if not output_dir.is_dir():
+            logger.info("Split operation cancelled - no directory selected")
+            return
+        
+        # Create and run the worker in a dialog
+        dialog = ProgressDialog("Splitting PDF", "", self)
+        worker = WorkerThread()
+        
+        def split_work(progress_callback) -> None:
+            """Split the PDF into chapters."""
+            logger.info("Starting PDF split operation")
             
-            def split_work(progress_callback) -> None:
-                """Worker function to split PDF."""
-                for i, (name, start, end) in enumerate(self.ranges, 1):
-                    # Create output path
-                    output_path = output_dir / f"{name}.pdf"
-                    
-                    # Extract pages with progress updates
-                    self._pdf_doc.extract_pages(
-                        start,
-                        end,
-                        output_path,
-                        progress_callback
-                    )
+            # Extract each range
+            for i, (name, start, end) in enumerate(ranges_to_split, 1):
+                # Update progress
+                progress = int(100 * i / len(ranges_to_split))
+                progress_callback(progress, f"Extracting {name}...")
+                
+                # Create output file
+                output_path = output_dir / f"{name}.pdf"
+                self._pdf_doc.extract_pages(
+                    start,
+                    end,
+                    output_path,
+                    progress_callback
+                )
             
-            # Create worker thread
-            worker = WorkerThread(split_work)
-            
-            # Show progress dialog
-            dialog = ProgressDialog(
-                "Splitting PDF",
-                "Preparing to split PDF...",
-                parent=self
-            )
-            dialog.run_operation(worker)
-            
-            # Show success message with output directory
-            QMessageBox.information(
-                self,
-                "Success",
-                f"PDF split into {len(self.ranges)} files.\n\n"
-                f"Files saved in:\n{output_dir}"
-            )
-            
-            # Clear ranges after successful split
-            self.ranges.clear()
-            self.range_list.clear()
-            self._update_button_states()
-            
-        except (PDFLoadError, ValueError) as e:
-            error_msg = str(e)
-            logger.error("Failed to split PDF: %s", error_msg)
-            QMessageBox.critical(
-                self,
-                "Error",
-                f"Failed to split PDF: {error_msg}"
-            )
-
+            # Final progress update
+            progress_callback(100, "Complete")
+            logger.info("PDF split operation completed")
+        
+        worker.operation = split_work
+        worker.finished.connect(lambda: self._on_split_complete(output_dir))
+        
+        dialog.run_operation(worker)
+    
+    def _on_split_complete(self, output_dir: Path) -> None:
+        """
+        Handle split operation completion.
+        
+        Args:
+            output_dir: The directory where output files were saved
+        """
+        QMessageBox.information(
+            self,
+            "Split Complete",
+            f"PDF has been split into separate files in:\n{str(output_dir)}"
+        )
+        logger.info("PDF split operation completed successfully")
+    
     def has_unsaved_changes(self) -> bool:
         """Check if there are unsaved changes."""
-        return self._modified
-
-    def _add_range(self, title: str, start: int, end: int) -> None:
-        """Add a new range to the list."""
-        try:
-            # Validate range
-            if not self._pdf_doc:
-                raise ValueError("No PDF document loaded")
-            if not (0 <= start <= end < self._pdf_doc.get_page_count()):
-                raise ValueError("Invalid page range")
-            
-            # Create range item
-            item = QListWidgetItem()
-            item.setText(f"{title} (Pages {start + 1}-{end + 1})")
-            item.setData(Qt.ItemDataRole.UserRole, (title, start, end))
-            self.range_list.addItem(item)
-            
-            self._modified = True
-            logger.debug("Added range: %s (pages %d-%d)", title, start + 1, end + 1)
-            
-        except Exception as e:
-            QMessageBox.warning(self, "Error", str(e))
-            logger.error("Failed to add range: %s", str(e)) 
+        return self._modified 
