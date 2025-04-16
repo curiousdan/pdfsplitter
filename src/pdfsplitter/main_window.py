@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class ThumbnailGenerator(QObject):
     """Helper class to handle thumbnail generation in a thread-safe way."""
-    thumbnails_ready = pyqtSignal(list)  # Signal emitting the list of thumbnails
+    progress_updated = pyqtSignal(int, str)  # Signal for progress updates
 
     def __init__(self, pdf_doc: PDFDocument, size: tuple[int, int]) -> None:
         """Initialize the generator."""
@@ -35,9 +35,30 @@ class ThumbnailGenerator(QObject):
         self.size = size
 
     def generate(self, progress_callback) -> None:
-        """Generate thumbnails and emit them."""
-        thumbnails = self.pdf_doc.generate_thumbnails(self.size, progress_callback)
-        self.thumbnails_ready.emit(thumbnails)
+        """
+        Pre-load visible thumbnails and setup the PDF document.
+        This prepares the thumbnail cache for faster display.
+        """
+        # Get the number of pages
+        page_count = self.pdf_doc.get_page_count()
+        
+        # Generate first few thumbnails to improve initial load performance
+        visible_page_count = min(10, page_count)
+        for i in range(visible_page_count):
+            # Pre-generate the first few thumbnails
+            self.pdf_doc.generate_preview(
+                i, 
+                size=self.size, 
+                is_thumbnail=True
+            )
+            
+            # Update progress
+            progress = int((i + 1) * 100 / visible_page_count)
+            # Use the provided progress_callback directly
+            progress_callback(
+                progress, 
+                f"Preparing thumbnails... ({i + 1}/{visible_page_count})"
+            )
 
 class MainWindow(QMainWindow):
     """Main window for the PDF Chapter Splitter application."""
@@ -255,18 +276,17 @@ class MainWindow(QMainWindow):
             # Update window title
             self.setWindowTitle(f"PDF Chapter Splitter - {Path(file_path).name}")
             
-            # Update thumbnail view
-            dialog = ProgressDialog("Loading PDF", "Generating thumbnails...", self)
-            worker = WorkerThread()
+            # Initialize the thumbnail widget with the PDF document
+            self.thumbnail_widget.set_pdf_document(self.pdf_doc)
             
+            # Update thumbnail view with progress dialog
+            dialog = ProgressDialog("Loading PDF", "Preparing thumbnails...", self)
+            
+            # Create thumbnail generator for initial thumbnail preparation
             generator = ThumbnailGenerator(self.pdf_doc, self.thumbnail_size)
-            generator.thumbnails_ready.connect(
-                lambda thumbnails: self.thumbnail_widget.set_thumbnails(
-                    thumbnails, self.pdf_doc.get_page_count()
-                )
-            )
             
-            worker.operation = generator.generate
+            # Create worker thread for background processing
+            worker = WorkerThread(generator.generate)
             dialog.run_operation(worker)
             
             # Update range widget and bookmark panel

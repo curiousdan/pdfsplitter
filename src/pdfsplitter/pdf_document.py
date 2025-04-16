@@ -189,17 +189,18 @@ class PDFDocument:
     
     MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
     
-    def __init__(self, file_path: Path) -> None:
+    def __init__(self, file_path: Path | str) -> None:
         """
         Initialize a PDFDocument instance.
         
         Args:
-            file_path: Path to the PDF file
+            file_path: Path to the PDF file (can be Path object or string)
             
         Raises:
             PDFLoadError: If the file cannot be loaded or is invalid
         """
-        self.file_path = file_path
+        # Convert string paths to Path objects
+        self.file_path = Path(file_path) if isinstance(file_path, str) else file_path
         self.doc: Any = None  # Will hold the fitz.Document instance
         self._preview_cache = PreviewCache()
         self._bookmark_detector = BookmarkDetector()

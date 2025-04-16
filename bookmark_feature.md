@@ -1,215 +1,263 @@
-# Bookmark Drag-Drop Enhancement Design Document
+Task: Implement Bookmark Drag-and-Drop Functionality
+1. Context:
 
-## Current Context
-- Bookmark tree supports basic drag-drop UI
-- No validation of bookmark hierarchy levels
-- Missing visual feedback for nesting
-- Inconsistent parent-child relationship updates
-- Page order not maintained during moves
-- Well-functioning bookmark data model exists
+Problem: The application features a bookmark tree (BookmarkTreeWidget defined in src/pdfsplitter/bookmark_tree.py) designed to allow users to reorder bookmarks via drag-and-drop. Currently, this feature is non-functional. Dragging might be visually possible, but dropping an item doesn't correctly update the bookmark order, likely due to issues in event handling, validation logic (src/pdfsplitter/bookmark_validation.py), or updating the data model (src/pdfsplitter/bookmark_manager.py). The intended design is described in bookmark_feature.md.
 
-## Requirements
+Goal: Implement a fully working drag-and-drop functionality for the BookmarkTreeWidget. This involves correctly processing drop events, validating the move against defined rules, providing visual feedback (optional for now, focus on functionality), updating the BookmarkManager's data structure, and ensuring the UI reflects the changes.
 
-### Functional Requirements
-- Validate bookmark level hierarchy during drag-drop
-- Maintain page order within each level
-- Support nested bookmark structures (H1 → H2 → H3)
-- Provide clear visual feedback during drag operations
-- Update both UI and data model consistently
-- Support undo/redo for drag-drop operations
+2. Affected Files:
 
-### Non-Functional Requirements
-- Responsive drag-drop feedback (<50ms)
-- Clear visual indicators for valid/invalid drops
-- Intuitive level nesting visualization
-- Graceful error handling for invalid moves
-- Comprehensive logging for debugging
+src/pdfsplitter/bookmark_tree.py (Primary UI logic)
 
-## Design Decisions
+src/pdfsplitter/bookmark_validation.py (Validation rules)
 
-### 1. Drag-Drop Validation
-Will implement real-time validation during drag because:
-- Provides immediate feedback to users
-- Prevents invalid operations before they occur
-- Matches user expectations for drag-drop
-- Trade-off: More complex UI code, but worth it for UX
+src/pdfsplitter/bookmark_manager.py (Data model updates)
 
-### 2. Visual Feedback System
-Will implement custom drop indicator painting because:
-- Allows precise control over nesting visualization
-- Can show both level and validity
-- Supports custom styling per requirement
-- Trade-off: More maintenance than default indicators
+src/pdfsplitter/main_window.py (Signal/slot connections)
 
-### 3. Bookmark Level Management
-Will implement strict level validation because:
-- Maintains consistent document structure
-- Prevents invalid hierarchies
-- Simplifies bookmark export
-- Trade-off: Less flexibility, but ensures valid PDFs
+src/pdfsplitter/bookmark_panel.py (Potential integration point)
 
-## Technical Design
+tests/test_bookmark_tree.py
 
-### 1. Core Components
-```python
-class BookmarkTreeWidget(QTreeWidget):
-    """Enhanced tree widget with validated drag-drop"""
-    
-    def __init__(self) -> None:
-        self.level_validator = BookmarkLevelValidator()
-        self.drop_indicator = DropIndicatorPainter()
-        
-    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
-        """Real-time validation during drag"""
-        if self.validateDrop(event):
-            self.drop_indicator.show(event, valid=True)
-            event.accept()
+tests/test_bookmark_validation.py
+
+tests/test_bookmark_manager.py
+
+3. Important Prerequisite - UI Integration:
+
+The custom BookmarkTreeWidget (which has the drag-drop code) needs to be used in the application's UI. Currently, BookmarkPanel (src/pdfsplitter/bookmark_panel.py) uses a standard QTreeWidget.
+
+Action: Modify BookmarkPanel.__init__ to instantiate and use BookmarkTreeWidget instead of QTreeWidget.
+
+# src/pdfsplitter/bookmark_panel.py
+# Add import for the custom widget
+from .bookmark_tree import BookmarkTreeWidget
+# ... other imports ...
+
+class BookmarkPanel(QDockWidget):
+    # ... signals ...
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        # ... super().__init__ ...
+        self._init_ui()
+        # Add a reference to the bookmark manager if needed for updates
+        self.bookmark_manager = None # Initialize, set later
+
+    def _init_ui(self) -> None:
+        # ... main_widget, layout ...
+
+        # Replace QTreeWidget with BookmarkTreeWidget
+        # self._tree = QTreeWidget() # Old line
+        self._tree = BookmarkTreeWidget() # New line
+
+        # Configure the custom tree (remove standard QTreeWidget settings if now defaults in BookmarkTreeWidget)
+        # self._tree.setHeaderLabels(["Title", "Page"]) # Maybe set inside BookmarkTreeWidget?
+        # self._tree.setColumnWidth(0, 200)
+        # self._tree.setToolTip("Drag to reorder bookmarks") # Update tooltip
+        # self._tree.setDragEnabled(False) # Remove, should be True in BookmarkTreeWidget
+        # self._tree.setAcceptDrops(False) # Remove, should be True in BookmarkTreeWidget
+        # self._tree.setSelectionMode(QTreeWidget.SelectionMode.SingleSelection) # Keep or set in custom widget
+
+        # Connect signals from the custom tree
+        self._tree.itemClicked.connect(self._on_item_clicked) # Keep for navigation
+        # self._tree.itemDoubleClicked.connect(self._on_item_double_clicked) # Keep for editing?
+        # Connect the NEW signal for when a move happens in the data model
+        self._tree.bookmark_moved.connect(self._handle_bookmark_moved_in_model) # Add this connection
+
+        self._layout.addWidget(self._tree)
+        # ... rest of UI setup ...
+
+    # Add a method to set the bookmark manager
+    def set_bookmark_manager(self, manager):
+         self.bookmark_manager = manager
+
+    # Rename update_bookmarks to reflect it updates from the manager
+    def update_tree_from_manager(self) -> None:
+        """Updates the tree view based on the current state of the bookmark manager."""
+        if self.bookmark_manager:
+             self._tree.update_from_manager(self.bookmark_manager.root)
         else:
-            self.drop_indicator.show(event, valid=False)
-            event.ignore()
-            
-    def validateDrop(self, event: QDragMoveEvent) -> bool:
-        """Validate level hierarchy and page order"""
-        
-class BookmarkLevelValidator:
-    """Validates bookmark level changes"""
-    def validate_move(
-        self, 
-        source: BookmarkNode,
-        target: BookmarkNode,
-        position: DropPosition
-    ) -> ValidationResult: ...
+             self._tree.clear()
+        # Update status label etc.
 
-class DropIndicatorPainter:
-    """Custom drop indicator visualization"""
-    def show(
-        self,
-        event: QDragMoveEvent,
-        valid: bool,
-        level_change: Optional[int] = None
-    ) -> None: ...
-```
+    # Slot to handle the bookmark_moved signal from the tree widget
+    def _handle_bookmark_moved_in_model(self, source_node, new_parent_node, position, level_change):
+        """Handles the actual data move in the BookmarkManager."""
+        if not self.bookmark_manager:
+            return
 
-### 2. Data Models
-```python
-@dataclass
-class DropPosition:
-    """Represents a potential drop location"""
-    target: BookmarkNode
-    position: Literal["before", "after", "inside"]
-    resulting_level: int
-    page_order_valid: bool
+        try:
+            # Calculate new level if needed (logic might depend on validator/manager)
+            # This might be simplified if move_bookmark handles level calculation
+            calculated_new_level = None # Placeholder - determine how level is updated
+            if position == DropPosition.INSIDE and new_parent_node:
+                 calculated_new_level = BookmarkLevel(new_parent_node.level.value + 1)
+            elif new_parent_node: # Moving as sibling
+                 calculated_new_level = new_parent_node.level
+            else: # Moving to root
+                 calculated_new_level = BookmarkLevel.H1
 
-@dataclass
-class ValidationResult:
-    """Result of drop validation"""
-    valid: bool
-    message: str
-    level_change: Optional[int] = None
-```
+            # Clamp level if necessary (e.g., BookmarkLevel max)
+            if calculated_new_level and calculated_new_level.value > max(level.value for level in BookmarkLevel if level != BookmarkLevel.ROOT):
+                 # Handle max level constraint if applicable
+                 pass
 
-### 3. Integration Points
-- BookmarkManager for node operations
-- MainWindow for status updates
-- UndoStack for operation history
-- Logging system for debugging
 
-## Implementation Plan
+            self.bookmark_manager.move_bookmark(source_node, new_parent_node, new_level=calculated_new_level)
 
-1. Phase 1: Core Validation (1 week)
-   - Implement BookmarkLevelValidator
-   - Add page order validation
-   - Add hierarchy validation
-   - Write unit tests for validation logic
+            # Optional: Refresh the specific part of the tree if update_from_manager is too slow
+            # For now, rely on the fact that super().dropEvent moved the UI item
 
-2. Phase 2: Visual Enhancement (1 week)
-   - Create DropIndicatorPainter
-   - Add level change visualization
-   - Implement validity feedback
-   - Add hover state feedback
+            # Mark changes as unsaved (might need signal to MainWindow)
+            # self.changes_made.emit() # Example signal
 
-3. Phase 3: Data Model Integration (1 week)
-   - Update BookmarkNode move operations
-   - Add undo/redo support
-   - Implement consistent updates
-   - Add error handling
+        except Exception as e:
+            logger.error(f"Error moving bookmark in manager: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to update bookmark structure: {e}")
+            # Consider reverting the UI move if the manager update fails
+            self.update_tree_from_manager() # Refresh tree to revert UI on error
 
-4. Phase 4: Testing & Polish (1 week)
-   - Add integration tests
-   - Performance optimization
-   - Add logging
-   - Documentation
+    # Modify update_bookmarks (or rename) to accept BookmarkManager
+    # def update_bookmarks(self, tree: Optional[BookmarkTree]) -> None: # Old
+    def display_bookmarks(self, manager) -> None: # New example
+         self.set_bookmark_manager(manager)
+         self.update_tree_from_manager()
+         # Update ranges tree etc.
 
-## Testing Strategy
+    # ... rest of BookmarkPanel ...
 
-### Unit Tests
-- Level validation logic
-- Page order validation
-- Drop position calculations
-- Visual feedback states
 
-### Integration Tests
-- End-to-end drag-drop operations
-- Undo/redo functionality
-- Error handling scenarios
-- Performance benchmarks
+Update MainWindow: Modify MainWindow to pass the BookmarkManager instance to the BookmarkPanel after a PDF is loaded. Change calls from self.bookmark_panel.update_bookmarks(...) to self.bookmark_panel.display_bookmarks(self.bookmark_manager). Ensure BookmarkManager is created/loaded in MainWindow.
 
-## Observability
+4. Detailed Steps (Code Implementation):
 
-### Logging
-- Drag start/end events
-- Validation results
-- Move operations
-- Error conditions
+Step 4.1: Refine BookmarkTreeWidget.dropEvent (src/pdfsplitter/bookmark_tree.py)
 
-### Metrics
-- Validation time
-- UI response time
-- Error rates
-- Usage patterns
+Implement the logic as outlined in the previous response's Task 3, Step 1.
 
-## Future Considerations
+Key points:
 
-### Potential Enhancements
-- Multi-item drag-drop
-- Custom level rules
-- Keyboard-driven moves
-- Bookmark templates
+Import BookmarkLevelValidator, DropPosition, QMessageBox, QDropEvent, QPointF, QMimeData.
 
-### Known Limitations
-- Single item moves only
-- Fixed level hierarchy
-- No cross-window drag-drop
-- Limited undo history
+Get source_item and target_item.
 
-## Dependencies
+Determine position (BEFORE, AFTER, INSIDE) based on dropIndicatorPosition() and handle dropping onto the background (target_item is None).
 
-### Runtime Dependencies
-- PyQt6
-- typing-extensions
-- dataclasses
+Calculate actual_parent_node based on position and target_item.
 
-### Development Dependencies
-- pytest
-- pytest-qt
-- pytest-mock
-- mypy
+Instantiate BookmarkLevelValidator.
 
-## Security Considerations
-- Input validation for bookmark titles
-- Memory management during drag
-- Resource cleanup
-- Error recovery
+Call validator.validate_move(source_node, target_node, position).
 
-## Rollout Strategy
-1. Developer testing with sample PDFs
-2. QA testing with edge cases
-3. Beta testing with power users
-4. Gradual feature enablement
-5. Full release with monitoring
+If valid:
 
-## References
-- PyQt6 drag-drop documentation
-- PDF bookmark specifications
-- Qt tree widget examples
-- Existing bookmark manager code
+Call event.acceptProposedAction().
+
+Emit self.bookmark_moved.emit(source_node, actual_parent_node, position, validation_result.level_change). Note: Add position and level_change parameters to the signal definition if they aren't there:
+
+# In BookmarkTreeWidget class definition
+bookmark_moved = pyqtSignal(BookmarkNode, BookmarkNode, DropPosition, int) # Add DropPosition, int
+
+Call super().dropEvent(event) to let Qt move the QTreeWidgetItem.
+
+Optionally update selection/scroll position.
+
+If invalid:
+
+Show QMessageBox.warning with validation_result.message.
+
+Call event.ignore().
+
+Use try...except for robustness.
+
+Step 4.2: Review/Refactor BookmarkLevelValidator (src/pdfsplitter/bookmark_validation.py)
+
+Read through the validate_move method and its helpers (_validate_structure, _validate_page_order, _validate_levels).
+
+Add comments explaining the logic behind each check.
+
+Simplify (Optional but Recommended): Can the level validation (_validate_levels) be simplified? Does it need to be strictly PyMuPDF compliant, or just prevent obvious issues like level jumps > 1? Discuss if unsure. The current logic for level_change calculation seems complex and might need refinement based on how BookmarkManager.move_bookmark handles level updates.
+
+Ensure validate_move returns a ValidationResult with the correct level_change value when the move is valid, especially for INSIDE moves.
+
+Step 4.3: Connect Signal and Implement Handler (in src/pdfsplitter/bookmark_panel.py)
+
+Ensure the BookmarkTreeWidget instance (self._tree) is used (see Prerequisite step).
+
+Add the _handle_bookmark_moved_in_model slot as shown in the Prerequisite step.
+
+Connect the signal in _init_ui: self._tree.bookmark_moved.connect(self._handle_bookmark_moved_in_model).
+
+Implement the logic inside _handle_bookmark_moved_in_model:
+
+Get the source_node, new_parent_node, position, level_change from the signal arguments.
+
+Call self.bookmark_manager.move_bookmark(...). Decide how to determine the new_level parameter for this call (e.g., based on position, level_change, new_parent_node.level). Add logic to calculate calculated_new_level.
+
+Wrap the call to move_bookmark in try...except.
+
+On success, signal MainWindow to enable the save button.
+
+On error, show a QMessageBox.critical and potentially refresh the tree (self.update_tree_from_manager()) to revert the UI change.
+
+Step 4.4: Ensure BookmarkManager.move_bookmark is Correct (src/pdfsplitter/bookmark_manager.py)
+
+Verify the logic:
+
+Removes node from node.parent.children.
+
+Appends node to actual_parent.children (where actual_parent is new_parent or self.root).
+
+Updates node.parent.
+
+Updates node.level if new_level argument is provided and valid.
+
+Sets self._modified = True.
+
+Consider adding more robust checks (e.g., ensure node is actually removed from the old parent).
+
+Step 4.5: Update Tests
+
+test_bookmark_validation.py: Add more test cases covering different drop positions (BEFORE, AFTER, INSIDE), level changes, page order violations, and structural violations (moving root, moving to descendant).
+
+test_bookmark_tree.py:
+
+Modify test_move_bookmark to use the updated bookmark_moved signal signature.
+
+Mock BookmarkLevelValidator.validate_move to return specific ValidationResult objects (both valid and invalid).
+
+Assert that bookmark_moved is emitted only when validation passes.
+
+Assert that QMessageBox.warning is called when validation fails (you might need to patch QMessageBox).
+
+Assert that super().dropEvent is called only on valid drops.
+
+test_bookmark_manager.py: Add more scenarios to test_move_bookmark, specifically checking the final parent, children list, and level of the moved node after various valid moves.
+
+test_bookmark_panel.py (or test_main_window.py): Add integration tests (mocking lower levels) to verify that a successful drop in the BookmarkTreeWidget triggers the _handle_bookmark_moved_in_model slot, which in turn calls BookmarkManager.move_bookmark with the correct arguments.
+
+5. Verification:
+
+Run the application and load a PDF with bookmarks.
+
+Ensure the bookmark tree is now using BookmarkTreeWidget (e.g., check tooltips or default behavior).
+
+Try dragging and dropping bookmarks:
+
+Reorder siblings at the same level.
+
+Nest a bookmark under another (making it a child).
+
+Un-nest a bookmark (move it to the parent level or root level).
+
+Move bookmarks between different branches.
+
+Verify that moves that should be invalid (e.g., creating level jumps > 1, violating page order if validation enforces it) are prevented, ideally with a warning message.
+
+After a successful move, verify the tree UI updates correctly.
+
+Verify the "Save" action becomes enabled after a successful move.
+
+Save the PDF, reopen it, and confirm the bookmark structure matches the changes made via drag-and-drop.
+
+Run pytest and ensure all tests, especially the new/modified ones, pass.
+
